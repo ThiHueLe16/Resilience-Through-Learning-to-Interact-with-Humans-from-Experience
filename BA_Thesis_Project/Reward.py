@@ -53,12 +53,9 @@ class Reward(RewardAPI):
     def compute_reward(self, action, prev_obs: EntityObs, curr_obs: EntityObs):
         """
             Compute the reward after running an action.
-           Important: always set_alertness_value (if the model is the proposed RA) and set_safety_envelope_intervenes() before calling compute_reward
+
         """
         print(f" hello HUEEEEEEE dang check gia tri safety signal {self.env.alertness_value}")
-        # self.env.alertness_value=5
-
-        # print(f" hello HUEEEEEEE dang check gia tri safety signal {self.env.alertness_value}")
         if self.check_reached_goal():
             self.info["safety_envelope_intervention"] = False
             return self.reach_reward
