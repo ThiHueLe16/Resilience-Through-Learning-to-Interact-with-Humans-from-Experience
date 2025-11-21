@@ -1,0 +1,30 @@
+scenario:
+  mode: "eval"
+  deterministic: True
+  randomize_aisle_width: False
+
+  eval_scenarios:
+    - name: "narrow aisle unaligned-left-right"
+      aisle_width: 2.0
+      alignment_mode: "unaligned-left-right"
+
+    - name: "narrow aisle unaligned-right-left"
+      aisle_width: 3.0
+      alignment_mode: "unaligned-right-left"
+
+    - name: "narrow aisle aligned"
+      aisle_width: 3.0
+      alignment_mode: "aligned"
+
+    - name: "mittle aisle aligned"
+      aisle_width: 4.0
+      alignment_mode: "aligned"
+
+    - name: "mittle aisle unaligned-right-left"
+      aisle_width: 4.0
+      alignment_mode: "aligned"
+
+    - name: "large aisle aligned"
+      aisle_width: 6.0
+      alignment_mode: "aligned"
+
