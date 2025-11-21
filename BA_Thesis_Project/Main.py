@@ -1,10 +1,22 @@
 import time
-
+import sys, os
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import PPO
 
 from BA_Thesis_Project.SafetyEnvelope import SafetyEnvelope
+
+# # Make Python load the local edited version of socnavenc1 first
+# repo_path = "/Users/thihuele/HumanDetection/navgym/SocNavGym"
+# if repo_path not in sys.path:
+#     sys.path.insert(0, repo_path)
+
+# force load the submodule-> sothat register() work and then gym.make() custom env work
+# -------------------------------------------------------------------------------
+import importlib, inspect
+import inspect, gymnasium_envCustomHue
+mod = importlib.import_module("gymnasium_envCustomHue.envs.frontal_encounter")
+# -------------------------------------------------------------------------------
 
 CONFIG_PATH="./SocNavGym/environment_configs/exp1_with_sngnn.yaml"
 A_ROBOT_MAX_BRAKE=0.5
