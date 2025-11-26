@@ -43,8 +43,9 @@ elif "debug=1" in sys.argv:
 MAX_ORIENTATION_CHANGE = math.pi / 2.
 
 class FrontalEncounter(SocNavEnv_v1):
-
-    def __init__(self, socnavgym_env_config: str=None, custom_scenario_config:str=None,render_mode: str = None, scenario_index:int |None=None )-> None:
+    # def __init__(self, socnavgym_env_config: str = None, custom_scenario_config: str = None, render_mode: str = None,
+    #              scenario_index: int | None = None) -> None:
+    def __init__(self, socnavgym_env_config: str=None, custom_scenario_config:str=None,render_mode: str = None)-> None:
         #Load custom scenario config
         with open(custom_scenario_config, "r") as custom_ymlfile:
             custom_config = yaml.safe_load(custom_ymlfile)
@@ -66,18 +67,30 @@ class FrontalEncounter(SocNavEnv_v1):
             self.alignment_mode = custom_config["scenario"]["alignment_mode"]
             # current_alignment mode is used to save the current mode chosen in training in set_y_robot
             self.current_alignment_mode=self.alignment_mode
+
+
         else: #in eval mode
-            assert scenario_index is not None, "scenario_index required in eval mode"
-            scenario_aisle_width= custom_config["scenario"]["eval_scenarios"][scenario_index]["aisle_width"]
-            socnavenv_config["env"]["min_map_y"] =scenario_aisle_width
-            socnavenv_config["env"]["max_map_y"] = scenario_aisle_width
-            # set alignment mode for the custom env to use in the reset()
-            self.alignment_mode = custom_config["scenario"]["eval_scenarios"][scenario_index]["alignment_mode"]
+            # assert scenario_index is not None, "scenario_index required in eval mode"
+            # scenario_aisle_width= custom_config["scenario"]["eval_scenarios"][scenario_index]["aisle_width"]
+            # socnavenv_config["env"]["min_map_y"] =scenario_aisle_width
+            # socnavenv_config["env"]["max_map_y"] = scenario_aisle_width
+            # # set alignment mode for the custom env to use in the reset()
+            # self.alignment_mode = custom_config["scenario"]["eval_scenarios"][scenario_index]["alignment_mode"]
             # current_alignment mode is used to save the current mode chosen in training in set_y_robot
-            self.current_alignment_mode = self.alignment_mode
+            # self.current_alignment_mode = self.alignment_mode
+            # Load all eval scenario config.EVAL ENV SETUP
+            self.eval_scenario=custom_config["scenario"]["eval_scenarios"]
+            self.num_eval_scenario=len(self.eval_scenario)
+            # This index will be used by reset() when eval callback to load the next scenario
+            self.current_eval_index=0
+
+            # self.y_r = custom_config["scenario"]["eval_scenarios"][scenario_index]["robot_y"]
+            # self.y_h = custom_config["scenario"]["eval_scenarios"][scenario_index]["human_y"]
             # self.robot_start_y_lane, self.human_start_y_lane= self.set_robot_human_start_y_lane()
 
-        self.y_r, self.y_h=None, None
+        # use self.y_r, self.y_h to log the y-coordinator of robot, and then later use y_r to set y_h during training. because y_r , y_h are sampled on different calls.
+        # additinally, use y_r, y_h to set the goal of human and robot and human, which is sample on different calls.
+        self.y_r, self.y_h = None, None
 
 
         # write the modified socnaenv_config dict back to an .yaml file. otherwise error "TypeError: expected str, bytes or os.PathLike object, not dict" appear
@@ -108,6 +121,14 @@ class FrontalEncounter(SocNavEnv_v1):
             pass
 
     def set_y_robot(self, half_size_y, r_r,r_h, delta):
+        """
+
+        :param half_size_y:
+        :param r_r: radius of robot
+        :param r_h: radius of human
+        :param delta: distance between 2 centers of human and robot
+        :return: start y-coordinator of robot
+        """
         mode= self.alignment_mode
         if mode=="both":
             mode=random.choice(["aligned-middle","aligned-middle","aligned-right","unaligned-lr-middle","unaligned-lr-near-left","unaligned-lr-near-right","unaligned-rl-middle","unaligned-rl-near-left","unaligned-rl-near-right"])
@@ -148,13 +169,17 @@ class FrontalEncounter(SocNavEnv_v1):
 
         mode = self.current_alignment_mode
         y_h= None
-        match mode:
-            case  "aligned-middle" | "aligned-left" | "aligned-right":
-                y_h= self.sample_y_human_aligned(y_r)
-            case "unaligned-lr-middle"|"unaligned-lr-near-left"| "unaligned-lr-near-right":
-                y_h = self.sample_y_human_lr(half_size_y, r_h, y_r, delta)
-            case "unaligned-rl-middle" |  "unaligned-rl-near-left" |"unaligned-rl-near-right":
-                y_h= self.sample_y_human_rl(half_size_y, r_h, y_r, delta)
+        if self.mode=='eval':
+            # load fix y-coordinator of human in custom eval scenario
+            y_h= self.eval_scenario[self.current_eval_index]["human_y"]
+        else:
+            match mode:
+                case  "aligned-middle" | "aligned-left" | "aligned-right":
+                    y_h= self.sample_y_human_aligned(y_r)
+                case "unaligned-lr-middle"|"unaligned-lr-near-left"| "unaligned-lr-near-right":
+                    y_h = self.sample_y_human_lr(half_size_y, r_h, y_r, delta)
+                case "unaligned-rl-middle" |  "unaligned-rl-near-left" |"unaligned-rl-near-right":
+                    y_h= self.sample_y_human_rl(half_size_y, r_h, y_r, delta)
         self.y_h=y_h
         return y_h
 
@@ -163,6 +188,12 @@ class FrontalEncounter(SocNavEnv_v1):
 
     @staticmethod
     def sample_uniform(low: float, high: float) -> float:
+        """
+
+        :param low: lower range
+        :param high: upper range
+        :return: a random number in range [low , high] or [low, high) depend on rounding
+        """
         """Simple helper with sanity check."""
         assert high > low, f"Invalid range: [{low}, {high}]"
         return random.uniform(low, high)
@@ -442,7 +473,10 @@ class FrontalEncounter(SocNavEnv_v1):
         """
         Resets the environment
         """
-
+        # todo delete
+        print(f"mode : {self.mode}")
+        if self.mode=="eval":
+            print(f"current eval index{self.current_eval_index}")
         start_time = time.time()
         if not self.has_configured:
             raise Exception("Please pass in the keyword argument config=\"path to config\" while calling gym.make")
@@ -456,6 +490,9 @@ class FrontalEncounter(SocNavEnv_v1):
         # randomly initialize the parameters
         self.randomize_params()
         self.id = 1
+        # EVAL
+        if self.mode =="eval":
+            self.MAP_Y=self.eval_scenario[self.current_eval_index]["aisle_width"]
 
         HALF_SIZE_X = self.MAP_X / 2. - self.MARGIN
         HALF_SIZE_Y = self.MAP_Y / 2. - self.MARGIN
@@ -709,6 +746,9 @@ class FrontalEncounter(SocNavEnv_v1):
                 device=('cuda' + str(self.cuda_device) if torch.cuda.is_available() else 'cpu'), params_dir=(
                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils", "sngnnv2", "example_model")))
 
+        # reset current eval index . next reset -> next scenario
+        self.current_eval_index= (self.current_eval_index+1)%self.num_eval_scenario
+
         return True, obs, {}
 
 
@@ -725,7 +765,12 @@ class FrontalEncounter(SocNavEnv_v1):
         if object_type == SocNavGymObject.ROBOT:
 
             # custom x, y_position -FOR THESIS
-            self.robot_start_y = self.set_y_robot(HALF_SIZE_Y, self.ROBOT_RADIUS,self.HUMAN_DIAMETER/2,  DELTA)
+            if(self.mode=="eval"):
+                #EVAL
+                self.y_r=self.eval_scenario[self.current_eval_index]["robot_y"]
+                self.robot_start_y= self.y_r
+            else:
+                self.robot_start_y = self.set_y_robot(HALF_SIZE_Y, self.ROBOT_RADIUS,self.HUMAN_DIAMETER/2,  DELTA)
             self.robot_start_x = random.uniform(-HALF_SIZE_X, -HALF_SIZE_X + 0.3)
             # print(f"robot_start_yHELLO: {self.robot_start_y}")
             arg_dict = {
@@ -955,6 +1000,99 @@ class FrontalEncounter(SocNavEnv_v1):
     #     self.safety_envelope_intervenes = False
     #
     #     return obs, info
+    def randomize_params(self):
+        """
+        To randomly initialize the number of entities of each type. Specifically, this function would initialize the MAP_SIZE, NUMBER_OF_HUMANS, NUMBER_OF_PLANTS, NUMBER_OF_LAPTOPS and NUMBER_OF_TABLES
+        """
+        self.MAP_X = random.uniform(self.MIN_MAP_X, self.MAX_MAP_X)
+        # =============================================
+        # ADJUST FOR THESIS.
+        # EVAL: Adjust map_y to set width for eval environment
+        if self.mode=="eval":
+            self.MAP_Y = self.eval_scenario[self.current_eval_index]["aisle_width"]
+        # =============================================
+        else:
+            if self.shape == "square" or self.shape == "L":
+                self.MAP_Y = self.MAP_X
+            else:
+                self.MAP_Y = random.uniform(self.MIN_MAP_Y, self.MAX_MAP_Y)
+
+        self.ROBOT_RADIUS = self.INITIAL_ROBOT_RADIUS + random.uniform(-self.ROBOT_RADIUS_MARGIN,
+                                                                       self.ROBOT_RADIUS_MARGIN)
+        self.GOAL_RADIUS = self.INITIAL_GOAL_RADIUS + random.uniform(-self.GOAL_RADIUS_MARGIN, self.GOAL_RADIUS_MARGIN)
+        self.GOAL_THRESHOLD = self.GOAL_RADIUS  # + self.ROBOT_RADIUS
+        self.GOAL_ORIENTATION_THRESHOLD = random.uniform(self.MIN_GOAL_ORIENTATION_THRESHOLD,
+                                                         self.MAX_GOAL_ORIENTATION_THRESHOLD)
+
+        self.RESOLUTION_X = int(1850 * self.MAP_X / (self.MAP_X + self.MAP_Y))
+        self.RESOLUTION_Y = int(1850 * self.MAP_Y / (self.MAP_X + self.MAP_Y))
+        self.NUMBER_OF_STATIC_HUMANS = random.randint(self.MIN_STATIC_HUMANS,
+                                                      self.MAX_STATIC_HUMANS)  # number of static humans in the env
+        self.NUMBER_OF_DYNAMIC_HUMANS = random.randint(self.MIN_DYNAMIC_HUMANS,
+                                                       self.MAX_DYNAMIC_HUMANS)  # number of static humans in the env
+        self.NUMBER_OF_PLANTS = random.randint(self.MIN_PLANTS, self.MAX_PLANTS)  # number of plants in the env
+        self.NUMBER_OF_TABLES = random.randint(self.MIN_TABLES, self.MAX_TABLES)  # number of tables in the env
+        self.NUMBER_OF_CHAIRS = random.randint(self.MIN_CHAIRS, self.MAX_CHAIRS)  # number of chairs in the env
+        self.NUMBER_OF_LAPTOPS = random.randint(self.MIN_LAPTOPS,
+                                                self.MAX_LAPTOPS)  # number of laptops in the env. Laptops will be sampled on tables
+        self.NUMBER_OF_H_H_DYNAMIC_INTERACTIONS = random.randint(self.MIN_H_H_DYNAMIC_INTERACTIONS,
+                                                                 self.MAX_H_H_DYNAMIC_INTERACTIONS)  # number of dynamic human-human interactions
+        self.NUMBER_OF_H_H_DYNAMIC_INTERACTIONS_NON_DISPERSING = random.randint(
+            self.MIN_H_H_DYNAMIC_INTERACTIONS_NON_DISPERSING,
+            self.MAX_H_H_DYNAMIC_INTERACTIONS_NON_DISPERSING)  # number of dynamic human-human interactions that do not disperse
+        self.NUMBER_OF_H_H_STATIC_INTERACTIONS = random.randint(self.MIN_H_H_STATIC_INTERACTIONS,
+                                                                self.MAX_H_H_STATIC_INTERACTIONS)  # number of static human-human interactions
+        self.NUMBER_OF_H_H_STATIC_INTERACTIONS_NON_DISPERSING = random.randint(
+            self.MIN_H_H_STATIC_INTERACTIONS_NON_DISPERSING,
+            self.MAX_H_H_STATIC_INTERACTIONS_NON_DISPERSING)  # number of static human-human interactions that do not disperse
+        self.humans_in_h_h_dynamic_interactions = []
+        self.humans_in_h_h_static_interactions = []
+        self.humans_in_h_h_dynamic_interactions_non_dispersing = []
+        self.humans_in_h_h_static_interactions_non_dispersing = []
+        for _ in range(self.NUMBER_OF_H_H_DYNAMIC_INTERACTIONS):
+            self.humans_in_h_h_dynamic_interactions.append(
+                random.randint(self.MIN_HUMAN_IN_H_H_INTERACTIONS, self.MAX_HUMAN_IN_H_H_INTERACTIONS))
+        for _ in range(self.NUMBER_OF_H_H_STATIC_INTERACTIONS):
+            self.humans_in_h_h_static_interactions.append(
+                random.randint(self.MIN_HUMAN_IN_H_H_INTERACTIONS, self.MAX_HUMAN_IN_H_H_INTERACTIONS))
+        for _ in range(self.NUMBER_OF_H_H_DYNAMIC_INTERACTIONS_NON_DISPERSING):
+            self.humans_in_h_h_dynamic_interactions_non_dispersing.append(
+                random.randint(self.MIN_HUMAN_IN_H_H_INTERACTIONS, self.MAX_HUMAN_IN_H_H_INTERACTIONS))
+        for _ in range(self.NUMBER_OF_H_H_STATIC_INTERACTIONS_NON_DISPERSING):
+            self.humans_in_h_h_static_interactions_non_dispersing.append(
+                random.randint(self.MIN_HUMAN_IN_H_H_INTERACTIONS, self.MAX_HUMAN_IN_H_H_INTERACTIONS))
+
+        self.NUMBER_OF_H_L_INTERACTIONS = random.randint(self.MIN_H_L_INTERACTIONS,
+                                                         self.MAX_H_L_INTERACTIONS)  # number of human laptop interactions
+        self.NUMBER_OF_H_L_INTERACTIONS_NON_DISPERSING = random.randint(self.MIN_H_L_INTERACTIONS_NON_DISPERSING,
+                                                                        self.MAX_H_L_INTERACTIONS_NON_DISPERSING)  # number of human laptop interactions that do not disperse
+        self.TOTAL_H_L_INTERACTIONS = self.NUMBER_OF_H_L_INTERACTIONS + self.NUMBER_OF_H_L_INTERACTIONS_NON_DISPERSING
+
+        # total humans
+        self.total_humans = self.NUMBER_OF_STATIC_HUMANS + self.NUMBER_OF_DYNAMIC_HUMANS
+        for i in self.humans_in_h_h_dynamic_interactions: self.total_humans += i
+        for i in self.humans_in_h_h_static_interactions: self.total_humans += i
+        for i in self.humans_in_h_h_dynamic_interactions_non_dispersing: self.total_humans += i
+        for i in self.humans_in_h_h_static_interactions_non_dispersing: self.total_humans += i
+        self.total_humans += self.TOTAL_H_L_INTERACTIONS
+        # randomly select the shape
+        if self.set_shape == "random":
+            self.shape = random.choice(["rectangle", "square", "L"])
+        else:
+            self.shape = self.set_shape
+
+        # adding Gaussian Noise to ORCA parameters
+        self.orca_neighborDist = 2 * self.HUMAN_DIAMETER + np.random.randn()
+        self.orca_timeHorizon = 5 + np.random.randn()
+        self.orca_timeHorizonObst = 5 + np.random.randn()
+        self.orca_maxSpeed = self.MAX_ADVANCE_HUMAN + np.random.randn() * 0.01
+
+        # adding Gaussian Noise to SFM parameters
+        self.sfm_r0 = abs(0.05 + np.random.randn() * 0.01)
+        self.sfm_gamma = 0.25 + np.random.randn() * 0.01
+        self.sfm_n = 1 + np.random.randn() * 0.1
+        self.sfm_n_prime = 1 + np.random.randn() * 0.1
+        self.sfm_lambd = 1 + np.random.randn() * 0.1
 
     def try_reset(self, seed=None, options=None):
         """
@@ -1234,6 +1372,9 @@ class FrontalEncounter(SocNavEnv_v1):
                 device=('cuda' + str(self.cuda_device) if torch.cuda.is_available() else 'cpu'), params_dir=(
                     os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils", "sngnnv2", "example_model")))
 
+        # EVAL. update index, next reset()-> next scenario
+        if self.mode== "eval":
+            self.current_eval_index= (self.current_eval_index+1)%self.num_eval_scenario
         return True, obs, {}
 
     def step(self, action_pre):
@@ -1469,4 +1610,5 @@ class FrontalEncounter(SocNavEnv_v1):
             self.form_human_laptop_interaction()  # form a new human-laptop interaction
 
         return observation, reward, terminated, truncated, info
+
 
