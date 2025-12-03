@@ -26,11 +26,8 @@ class Reward(RewardAPI):
         # self.env.alertness_value=None
         # self.env.safety_envelope_intervenes= False
         self.prev_distance= None
-
-        self.distance_reward_scaler=-50
-        self.alertness_value_scaler=50
+        self.distance_reward_scaler=-200
         self.reach_reward = 20000
-        self.intervention_reward=-20000
         self.collision_penalty = -10000
         self.max_steps_penalty= -1000
 
@@ -51,8 +48,8 @@ class Reward(RewardAPI):
             distance_to_goal = np.sqrt((self.env.robot.goal_x - self.env.robot.x) ** 2 + (self.env.robot.goal_y - self.env.robot.y) ** 2)
 
             reward=0
-
-            reward = -(distance_to_goal-self.prev_distance) * self.distance_reward_scaler
+            if self.prev_distance is not None:
+                reward = -(distance_to_goal-self.prev_distance) * self.distance_reward_scaler
 
             self.prev_distance = distance_to_goal
             return reward

@@ -7,8 +7,8 @@ class PPOAgent:
         # use MultiInputPolicy (not MlpPolicy) because the observation's type of socnavenv is gymnasium.Spaces.Dict
         self.model= PPO("MultiInputPolicy", env=env, verbose=1,tensorboard_log=tensorboard_log)
 
-    def train(self, total_timesteps: int, tb_log_name):
-            self.model.learn(total_timesteps=total_timesteps, tb_log_name=tb_log_name)
+    def train(self, total_timesteps: int, tb_log_name, callback):
+            self.model.learn(total_timesteps=total_timesteps, tb_log_name=tb_log_name, callback=callback)
 
     def act(self, obs, deterministic: bool=True):
         """

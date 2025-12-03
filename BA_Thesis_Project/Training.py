@@ -19,7 +19,7 @@ SOCNAVENV_CONFIG_PATH="../SocNavGym/environment_configs/exp1_with_sngnn.yaml"
 CUSTOM_TRAIN_CONFIG_PATH="../gymnasium_envCustomHue/envs/train_frontal_encounter_configs.yaml"
 CUSTOM_EVAL_CONFIG_PATH="../gymnasium_envCustomHue/envs/eval_frontal_encounter_configs.yaml"
 
-TENSORBOARD_LOGDIR= "tensorboard_log_dir"
+TENSORBOARD_LOGDIR= "tensorboard_train_log_dir"
 
 TB_LOG_NAME_PROPOSED_ARCH= "proposed_architecture"
 
@@ -28,28 +28,31 @@ SAVE_TRAINED_MODEL_DIR= "save_trained_model"
 # Create log dir where evaluation and checkpoint results will be saved
 CALLBACK_LOG_DIR= Path("callback_log_dir")
 
-EVAL_FREQ=10
+EVAL_FREQ=3
 # TODO UPDATE NUM OF EVAL EPISODDE
-N_EVAL_EPISODE=3
+N_EVAL_EPISODE=20
 SAVE_CHECKPOINT_FREQ=20000
 
 def train_architecture_b1():
-    # TODO ADD CALLBACK CHECKCALL FOR EVALUATION during training
+    # make train env
     env = gym.make(id=ID_CUSTOM_ENV, socnavgym_env_config=SOCNAVENV_CONFIG_PATH, custom_scenario_config=CUSTOM_TRAIN_CONFIG_PATH)
     # wrapped this env around the env by safety env -> we have an env inside the safety envelope of the baseline architecture, which interact directly with the RL-agent
     env_inside_wrapper= SafetyEnvelopeWrapperB1(env)
     # reset the agent to set up the alertness_value, safety_env_intervene in obs
-    env_inside_wrapper.reset()
+    obs_train, _=env_inside_wrapper.reset()
+    print("TRAIN obs space:", env_inside_wrapper.observation_space)
+    print("TRAIN obs shapes:", {k: v.shape for k, v in obs_train.items()})
     # create the RL agent
     rl_agent_baseline= PPOAgent(env=env_inside_wrapper, tensorboard_log=TENSORBOARD_LOGDIR)
 
     # make eval env
-    # TODO MAKE EVAL ENV
-    eval_env= gym.make(id=ID_CUSTOM_ENV, socnavgym_env_config=SOCNAVENV_CONFIG_PATH, custom_scenario_config=CUSTOM_EVAL_CONFIG_PATH)
+    eval_env= gym.make(id=ID_CUSTOM_ENV, socnavgym_env_config=SOCNAVENV_CONFIG_PATH, custom_scenario_config=CUSTOM_TRAIN_CONFIG_PATH)
     eval_env_inside_wrapper=SafetyEnvelopeWrapperB1(eval_env)
     eval_env =Monitor(eval_env_inside_wrapper)
+    obs_eval, _= eval_env.reset()
+    print("EVAL  obs space:", eval_env_inside_wrapper.observation_space)
+    print("EVAL  obs shapes:", {k: v.shape for k, v in obs_eval.items()})
     # set up callback
-    # TODO: Adjust model name here
     callback_log_dir=CALLBACK_LOG_DIR/"modelB1"
     name_prefix="modelB1"
 
@@ -75,31 +78,75 @@ def train_architecture_b2():
     env_inside_wrapper.reset()
     rl_agent_baseline= PPOAgent(env=env_inside_wrapper, tensorboard_log=TENSORBOARD_LOGDIR)
 
+    # make eval env
+    eval_env = gym.make(id=ID_CUSTOM_ENV, socnavgym_env_config=SOCNAVENV_CONFIG_PATH,
+                        custom_scenario_config=CUSTOM_TRAIN_CONFIG_PATH)
+    eval_env_inside_wrapper = SafetyEnvelopeWrapperB2(eval_env)
+    eval_env = Monitor(eval_env_inside_wrapper)
+    obs_eval, _ = eval_env.reset()
+    print("EVAL  obs space:", eval_env_inside_wrapper.observation_space)
+    print("EVAL  obs shapes:", {k: v.shape for k, v in obs_eval.items()})
+    # set up callback
 
+    callback_log_dir = CALLBACK_LOG_DIR / "modelB2"
+    name_prefix = "modelB2"
+
+    checkpoint_callback = CheckpointCallback(save_freq=SAVE_CHECKPOINT_FREQ, save_path=str(callback_log_dir),
+                                             name_prefix="modelB2")
+    eval_callback = EvalCallback(eval_env, best_model_save_path=str(callback_log_dir),
+                                 log_path=str(callback_log_dir), eval_freq=EVAL_FREQ,
+                                 n_eval_episodes=N_EVAL_EPISODE, deterministic=True,
+                                 render=False)
+    callback = CallbackList([checkpoint_callback, eval_callback])
+
+    # train agent
     print("Training B2 architecture started...")
-    rl_agent_baseline.train(total_timesteps=TOTAL_TRAIN_TIMESTEPS, tb_log_name="architecture_B2")
+    rl_agent_baseline.train(total_timesteps=TOTAL_TRAIN_TIMESTEPS, tb_log_name="architecture_B2",callback=callback)
     print("Training B2 architecture ended...")
     rl_agent_baseline.save(path=SAVE_TRAINED_MODEL_DIR + "final_trained_architecture_B2")
     print(f"Trained B3 model was saved to {SAVE_TRAINED_MODEL_DIR}/final_trained_architecture_B2")
 
 def train_architecture_b3():
-    # TODO ADD CALLBACK CHECKCALL FOR EVALUATION during training
+
     env = gym.make(id=ID_CUSTOM_ENV, socnavgym_env_config=SOCNAVENV_CONFIG_PATH, custom_scenario_config=CUSTOM_TRAIN_CONFIG_PATH)
     env_inside_wrapper= SafetyEnvelopeWrapperB3(env)
     env_inside_wrapper.reset()
     rl_agent_baseline= PPOAgent(env=env_inside_wrapper, tensorboard_log=TENSORBOARD_LOGDIR)
+
+    # make eval env
+
+    eval_env = gym.make(id=ID_CUSTOM_ENV, socnavgym_env_config=SOCNAVENV_CONFIG_PATH,
+                        custom_scenario_config=CUSTOM_TRAIN_CONFIG_PATH)
+    eval_env_inside_wrapper = SafetyEnvelopeWrapperB3(eval_env)
+    eval_env = Monitor(eval_env_inside_wrapper)
+    obs_eval, _ = eval_env.reset()
+    print("EVAL  obs space:", eval_env_inside_wrapper.observation_space)
+    print("EVAL  obs shapes:", {k: v.shape for k, v in obs_eval.items()})
+    # set up callback
+
+    callback_log_dir = CALLBACK_LOG_DIR / "modelB3"
+    name_prefix = "modelB3"
+
+    checkpoint_callback = CheckpointCallback(save_freq=SAVE_CHECKPOINT_FREQ, save_path=str(callback_log_dir),
+                                             name_prefix="modelB3")
+    eval_callback = EvalCallback(eval_env, best_model_save_path=str(callback_log_dir),
+                                 log_path=str(callback_log_dir), eval_freq=EVAL_FREQ,
+                                 n_eval_episodes=N_EVAL_EPISODE, deterministic=True,
+                                 render=False)
+    callback = CallbackList([checkpoint_callback, eval_callback])
+
     #train agent
     print("Training B3 architecture started...")
-    rl_agent_baseline.train(total_timesteps=TOTAL_TRAIN_TIMESTEPS, tb_log_name="architecture_B3")
+    rl_agent_baseline.train(total_timesteps=TOTAL_TRAIN_TIMESTEPS, tb_log_name="architecture_B3", callback=callback)
     print("Training B3 architecture ended...")
     # save trained model
     rl_agent_baseline.save(path=SAVE_TRAINED_MODEL_DIR + "final_trained_architecture_B3")
     print(f"Trained B3 model was saved to {SAVE_TRAINED_MODEL_DIR}/final_trained_architecture_B3")
 
 if __name__ == "__main__":
-    train_architecture_b1()
-    # # train_architecture_b2()
-    # train_architecture_b3()
+    # train_architecture_b1()
+    #  train_architecture_b2()
+    train_architecture_b3()
 
 # def train_baseline_architecture():
 #     # TODO ADD CALLBACK CHECKCALL FOR EVALUATION during training
