@@ -3,25 +3,31 @@ import numpy as np
 TIME_STEP=1
 A_ROBOT_MAX_BRAKE=1
 V_HUMAN=0.1
-A_MIN_HUMAN_BRAKE=1
+A_MIN_HUMAN_BRAKE=0.2
 MAX_ADVANCE_ROBOT=0.1
+A_MIN_ROBOT_BRAKE=0.2
+A_MAX_ACCEL=0.1
 
 EPSILON=MAX_ADVANCE_ROBOT
 WARNING_ZONE_HUMAN=4
 WARNING_ZONE_WALL=2
-
+RESPONSE_TIME= 1
+EPSILON_ALPHA=0.97
 
 class SafetyEnvelope:
     # TODO: check away to get timestep from the config file in other class before passing and create the safety envelope object
     # todo also check a_max_human and robot, robot
 
-    def __init__(self,env,a_robot_max_brake=A_ROBOT_MAX_BRAKE, time_step=TIME_STEP,v_human=V_HUMAN,  a_min_human_brake=A_MIN_HUMAN_BRAKE, max_advance_robot=MAX_ADVANCE_ROBOT):
+    def __init__(self,env,a_robot_max_brake=A_ROBOT_MAX_BRAKE, time_step=TIME_STEP,v_human=V_HUMAN,a_min_robot_brake=A_MIN_ROBOT_BRAKE,  a_min_human_brake=A_MIN_HUMAN_BRAKE, max_advance_robot=MAX_ADVANCE_ROBOT,a_max_accel=A_MAX_ACCEL, responseTime=RESPONSE_TIME):
         self.env=env
         self.time_step= time_step
-        self.a_robot_max_brake=a_robot_max_brake
         self.v_human =v_human
         self.a_min_human_brake= a_min_human_brake
+        self.a_min_robot_brake=a_min_robot_brake
+        self.a_max_accel=a_max_accel
         self.max_advance_robot=max_advance_robot
+        self.responseTime=responseTime
+        self.epsilon_alpha=EPSILON_ALPHA
 
 
     def next_action(self, main_function_action, obs):
@@ -35,39 +41,28 @@ class SafetyEnvelope:
         :param obs: current obs
         :return: safe action, alertness value, should_intervene: bool- if the safety envelope should intervene
         """
-        should_intervene, alertness_value = self.should_intervene( main_function_action, obs)
+        should_intervene, alertness_value,  alertHuman, alertWall= self.should_intervene( main_function_action, obs)
         if should_intervene:
             stop_action = np.array([0, 0, 0], dtype=np.float32)
-            return stop_action, alertness_value, should_intervene
+            return stop_action, alertness_value, should_intervene, alertHuman, alertWall
 
-        return main_function_action, alertness_value, should_intervene
+        return main_function_action, alertness_value, should_intervene, alertHuman, alertWall
 
     # check if an intervention is needed and output additional alertness value
     def should_intervene(self, main_function_action, obs):
-        # minimum_obstacles_distance = min_distance_to_obstacles
-        # minimum_braking_distance = self.compute_minimum_braking_distance(main_function_action, obs)
-        # print(f"minimum braking distance {minimum_braking_distance}")
-        # alertness_value = self.compute_continuous_safety_signal(minimum_obstacles_distance,minimum_braking_distance,4 * minimum_braking_distance)
-        # return minimum_obstacles_distance <= minimum_braking_distance, alertness_value
-
-        #compute distances to other obstacles
-        d_human_current= SafetyEnvelope.compute_d_min_to_obstacles(obs)
-        d_walls_current= self.compute_min_distance_to_wall(obs)
-        #compute threshold
-        d_min_human=self.compute_minimum_braking_distance(main_function_action, obs, "dynamic")
-        d_min_wall=self.compute_minimum_braking_distance(main_function_action, obs, "static")
-        print(f"d_min human {d_min_human}")
-        print(f"d_min wall {d_min_wall}")
-
-        #intervention rules
-        intervene_human= d_human_current<=d_min_human
-        intervene_wall= d_walls_current<=d_min_wall
-        should_intervene=intervene_human or intervene_wall
-        #compute alertness_value
-        alert_human= self.compute_continuous_safety_signal(d_human_current, d_min_human, WARNING_ZONE_HUMAN*d_min_human)
-        alert_wall= self.compute_continuous_safety_signal(d_walls_current, d_min_wall, WARNING_ZONE_WALL*d_min_wall)
-        alertness_value= max(alert_wall, alert_human)
-        return should_intervene, alertness_value
+        # compute distances to other obstacles
+        d_human_current = SafetyEnvelope.compute_d_min_to_obstacles(obs)
+        d_walls_current = self.compute_min_distance_to_wall(obs)
+        # compute threshold
+        d_min_human = self.compute_minimum_braking_distance(main_function_action, obs, "dynamic")
+        d_min_wall = self.compute_minimum_braking_distance(main_function_action, obs, "static")
+        # compute alertness_value
+        alert_human = self.compute_continuous_safety_signal(d_human_current, d_min_human, WARNING_ZONE_HUMAN * d_min_human)
+        alert_wall = self.compute_continuous_safety_signal(d_walls_current, d_min_wall, WARNING_ZONE_WALL * d_min_wall)
+        alertness_value = max(alert_wall, alert_human)
+        # intervention
+        should_intervene = alertness_value >= self.epsilon_alpha
+        return should_intervene, alertness_value, alert_human, alert_wall
 
 
 
@@ -122,11 +117,16 @@ class SafetyEnvelope:
         robot_predicted_speed=SafetyEnvelope.get_action_speed(main_function_action, self.max_advance_robot)
         # robot_radius= obs["robot"][8]
         if obstacle_type=="dynamic":
-            # human_radius=obs["humans"][10]
-            d_min= (((robot_current_speed+robot_predicted_speed)/2)*self.time_step+ (robot_predicted_speed**2)/(2*self.a_robot_max_brake)+
-                ((self.v_human+ self.v_human)/2)*self.time_step+(self.v_human**2)/(2*self.a_min_human_brake))+EPSILON
+            # human
+            # d_min = (((robot_current_speed + robot_predicted_speed) / 2) * self.time_step + (
+            #             robot_predicted_speed ** 2) / (2 * self.a_robot_max_brake) +
+            #          ((self.v_human + self.v_human) / 2) * self.time_step + (self.v_human ** 2) / (
+            #                      2 * self.a_min_human_brake)) + EPSILON
+            d_min= (((robot_current_speed+robot_current_speed+self.responseTime*self.a_max_accel)/2)*self.responseTime+ ((robot_current_speed+self.responseTime*self.a_max_accel)**2)/(2*A_MIN_ROBOT_BRAKE)+
+                ((self.v_human+ self.v_human+self.responseTime*self.a_max_accel)/2)*self.responseTime+((self.v_human+self.responseTime*self.a_max_accel)**2)/(2*self.a_min_human_brake))+EPSILON
         else:
-            d_min=((robot_current_speed+robot_predicted_speed)/2)*self.time_step+ (robot_predicted_speed**2)/(2*self.a_robot_max_brake)+EPSILON
+            #
+            d_min= (((robot_current_speed+robot_current_speed+self.responseTime*self.a_max_accel)/2)*self.responseTime+ ((robot_current_speed+self.responseTime*self.a_max_accel)**2)/(2*A_MIN_ROBOT_BRAKE))+EPSILON
         return d_min
 
 

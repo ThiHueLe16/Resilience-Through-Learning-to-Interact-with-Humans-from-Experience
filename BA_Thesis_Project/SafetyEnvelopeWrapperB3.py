@@ -13,14 +13,20 @@ class SafetyEnvelopeWrapperB3(SafetyEnvelopeWrapperB2):
         # add alertness_value to the obs of wrapper sothat the RL agent can learn from observing obs and reward
         assert isinstance(original_space, spaces.Dict), "SocNavGym obs must be Dict"
         self.observation_space = spaces.Dict(
-            {**original_space.spaces, "alertness_value": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32), })
+            {**original_space.spaces, "alertness_value": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+             "alertness_human": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
+             "alertness_wall": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32), })
 
     def reset(self, **kwargs):
         obs, info= super().reset( **kwargs)
         info=dict(info)
         # add alertness value to obs, info
         obs["alertness_value"] = np.array([self.alertness_value], dtype=np.float32)
+        obs["alertness_human"] = np.array([self.alertnessHuman], dtype=np.float32)
+        obs["alertness_wall"] = np.array([self.alertnessWall], dtype=np.float32)
         info["alertness_value"] = self.alertness_value
+        info["alertness_human"] = self.alertnessHuman
+        info["alertness_wall"] = self.alertnessWall
         obs = dict(obs)
         self.current_obs=obs
         self.current_info=info
@@ -32,7 +38,12 @@ class SafetyEnvelopeWrapperB3(SafetyEnvelopeWrapperB2):
         obs=dict(obs)
         info=dict(info)
         obs["alertness_value"] = np.array([self.alertness_value], dtype=np.float32)
+        obs["alertness_human"] = np.array([self.alertnessHuman], dtype=np.float32)
+        obs["alertness_wall"] = np.array([self.alertnessWall], dtype=np.float32)
+
         info["alertness_value"] = self.alertness_value
+        info["alertness_human"] = self.alertnessHuman
+        info["alertness_wall"] = self.alertnessWall
         self.current_obs=obs
         self.current_info=info
         return self.current_obs, reward, terminated, truncated, self.current_info

@@ -26,10 +26,11 @@ class Reward(RewardAPI):
         # self.env.alertness_value=None
         # self.env.safety_envelope_intervenes= False
         self.prev_distance= None
-        self.distance_reward_scaler=-200
-        self.reach_reward = 20000
-        self.collision_penalty = -10000
-        self.max_steps_penalty= -1000
+        self.distancePenalty=-3.0
+        self.reach_reward = 30
+        self.collision_penalty = -50
+        self.max_steps_penalty= -10
+        self.step_penalty=-0.02
 
     def compute_reward(self, action, prev_obs: EntityObs, curr_obs: EntityObs):
         """
@@ -48,38 +49,12 @@ class Reward(RewardAPI):
             distance_to_goal = np.sqrt((self.env.robot.goal_x - self.env.robot.x) ** 2 + (self.env.robot.goal_y - self.env.robot.y) ** 2)
 
             reward=0
+
             if self.prev_distance is not None:
-                reward = -(distance_to_goal-self.prev_distance) * self.distance_reward_scaler
+                reward = self.step_penalty+(distance_to_goal-self.prev_distance) *self.distancePenalty
 
             self.prev_distance = distance_to_goal
             return reward
 
-
-    # def compute_reward(self, action, prev_obs: EntityObs, curr_obs: EntityObs):
-    #     """
-    #         Compute the reward after running an action.
-    #
-    #     """
-    #     # print(f" hello HUEEEEEEE dang check gia tri safety signal {self.env.alertness_value}")
-    #     if self.check_reached_goal():
-    #         self.info["safety_envelope_intervention"] = False
-    #         return self.reach_reward
-    #     elif self.env.safety_envelope_intervenes:
-    #         self.info["safety_envelope_intervention"] = True
-    #         return self.intervention_reward
-    #     else:
-    #         distance_to_goal = np.sqrt((self.env.robot.goal_x - self.env.robot.x) ** 2 + (self.env.robot.goal_y - self.env.robot.y) ** 2)
-    #
-    #         reward=0
-    #         if self.prev_distance is not None:
-    #             reward = -(distance_to_goal-self.prev_distance) * self.distance_reward_scaler
-    #
-    #         self.prev_distance = distance_to_goal
-    #
-    #         if self.env.alertness_value is not None:
-    #             reward-= self.alertness_value_scaler*self.env.alertness_value
-    #             self.info["alertness_value"] = self.env.alertness_value
-    #         self.info["safety_envelope_intervention"] = False
-    #         return reward
 
 
