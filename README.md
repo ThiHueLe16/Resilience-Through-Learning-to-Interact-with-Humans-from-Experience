@@ -1,3 +1,4 @@
+
 # Gymnasium Examples
 Some simple examples of Gymnasium environments and wrappers.
 For some explanations of these examples, see the [Gymnasium documentation](https://gymnasium.farama.org).
@@ -30,4 +31,7 @@ To install your new environment, run the following commands:
 cd gymnasium_envCustomHue
 pip install -e .
 ```
+
+=======
+#
 
