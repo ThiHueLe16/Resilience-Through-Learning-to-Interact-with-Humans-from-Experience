@@ -33,5 +33,11 @@ pip install -e .
 ```
 
 =======
-#
+
+To reproduce the result for the evaluation after training, please run the BA_Thesis_Project/Evaluation.py. 
+
+Eval result is saved in BA-Thesis-Project/eval_results. All model checkpoint and best models are saved in BA_Thesis_Project/callback_log_dir_UPDATE
+
+Training models is implemented in BA-Thesis-Project/training.py
+
 
