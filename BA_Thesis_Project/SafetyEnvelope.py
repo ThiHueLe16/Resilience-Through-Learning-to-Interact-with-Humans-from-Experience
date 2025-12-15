@@ -1,4 +1,5 @@
 import numpy as np
+from sympy.polys.densebasic import dmp_LC
 
 TIME_STEP=1
 A_ROBOT_MAX_BRAKE=1
@@ -8,11 +9,16 @@ MAX_ADVANCE_ROBOT=0.1
 A_MIN_ROBOT_BRAKE=0.2
 A_MAX_ACCEL=0.1
 
-EPSILON=MAX_ADVANCE_ROBOT
-WARNING_ZONE_HUMAN=4
-WARNING_ZONE_WALL=2
+
+WARNING_ZONE_HUMAN=3
+WARNING_ZONE_WALL=3
 RESPONSE_TIME= 1
 EPSILON_ALPHA=0.97
+
+# For computing minimum braking distance
+D_MIN_HUMAN=0.435
+D_MIN_WALL=0.11
+EPSILON=MAX_ADVANCE_ROBOT
 
 class SafetyEnvelope:
     # TODO: check away to get timestep from the config file in other class before passing and create the safety envelope object
@@ -39,7 +45,7 @@ class SafetyEnvelope:
         :param min_distance_to_obstacles: current min distance to other obstacles in env
         :param main_function_action: the predict action by the RL agent
         :param obs: current obs
-        :return: safe action, alertness value, should_intervene: bool- if the safety envelope should intervene
+        :return: safe action, alertness value, should_intervene: bool- if the safety envelope should intervene, wall_distances: distances to 4 walls use for obs
         """
         should_intervene, alertness_value,  alertHuman, alertWall= self.should_intervene( main_function_action, obs)
         if should_intervene:
@@ -66,26 +72,6 @@ class SafetyEnvelope:
 
 
 
-
-    # # decide the next action to execute by checking if an intervention is needed. Additionally, output an alertness value
-    # def next_action(self,info, main_function_action, obs):
-    #     should_intervene, alertness_value=self.should_intervene(info, main_function_action,obs)
-    #     if should_intervene:
-    #         stop_action = np.array([0, 0, 0], dtype=np.float32)
-    #         return stop_action, alertness_value
-    #
-    #     return main_function_action, alertness_value
-    #
-    #
-    # # check if an intervention is needed and output additional alertness value
-    # def should_intervene(self, info,main_function_action,obs):
-    #     minimum_obstacles_distance = info['MINIMUM_OBSTACLE_DISTANCE']
-    #     minimum_braking_distance=self.compute_minimum_braking_distance(main_function_action,obs)
-    #     alertness_value= self.compute_continuous_safety_signal(minimum_obstacles_distance, minimum_braking_distance,2*minimum_braking_distance)
-    #     return minimum_obstacles_distance<= minimum_braking_distance,alertness_value
-
-
-
     @staticmethod
     def compute_continuous_safety_signal(d_current, d_min, d_warn):
         """
@@ -94,7 +80,6 @@ class SafetyEnvelope:
         :param d_warn: distance in which robot start to give warning about near intervention
         :return: the alertness value
         """
-        print(f"d current={d_current}")
         if d_min >= d_current:
             alertness_value = 1
         elif d_warn > d_current > d_min:
@@ -112,21 +97,18 @@ class SafetyEnvelope:
         :param obstacle_type: "dynamic" or "static". use dynamic if obstacle is moving(e.g dynamic human,...) and static (e.g: walls,...) otherwise
         :return: the minimum braking distance in which the Safety Envelope need to intervene
         """
-        robot_current_speed= self.get_robot_current_speed()
-        print(f"a_robot current speed{robot_current_speed}")
-        robot_predicted_speed=SafetyEnvelope.get_action_speed(main_function_action, self.max_advance_robot)
+        # robot_current_speed= self.get_robot_current_speed()
+        # robot_predicted_speed=SafetyEnvelope.get_action_speed(main_function_action, self.max_advance_robot)
         # robot_radius= obs["robot"][8]
         if obstacle_type=="dynamic":
             # human
-            # d_min = (((robot_current_speed + robot_predicted_speed) / 2) * self.time_step + (
-            #             robot_predicted_speed ** 2) / (2 * self.a_robot_max_brake) +
-            #          ((self.v_human + self.v_human) / 2) * self.time_step + (self.v_human ** 2) / (
-            #                      2 * self.a_min_human_brake)) + EPSILON
-            d_min= (((robot_current_speed+robot_current_speed+self.responseTime*self.a_max_accel)/2)*self.responseTime+ ((robot_current_speed+self.responseTime*self.a_max_accel)**2)/(2*A_MIN_ROBOT_BRAKE)+
-                ((self.v_human+ self.v_human+self.responseTime*self.a_max_accel)/2)*self.responseTime+((self.v_human+self.responseTime*self.a_max_accel)**2)/(2*self.a_min_human_brake))+EPSILON
+            # d_min= (((robot_current_speed+robot_current_speed+self.responseTime*self.a_max_accel)/2)*self.responseTime+ ((robot_current_speed+self.responseTime*self.a_max_accel)**2)/(2*A_MIN_ROBOT_BRAKE)+
+            #     ((self.v_human+ self.v_human+self.responseTime*self.a_max_accel)/2)*self.responseTime+((self.v_human+self.responseTime*self.a_max_accel)**2)/(2*self.a_min_human_brake))+EPSILON
+            d_min=D_MIN_HUMAN+EPSILON
         else:
-            #
-            d_min= (((robot_current_speed+robot_current_speed+self.responseTime*self.a_max_accel)/2)*self.responseTime+ ((robot_current_speed+self.responseTime*self.a_max_accel)**2)/(2*A_MIN_ROBOT_BRAKE))+EPSILON
+            #wall
+            # d_min= (((robot_current_speed+robot_current_speed+self.responseTime*self.a_max_accel)/2)*self.responseTime+ ((robot_current_speed+self.responseTime*self.a_max_accel)**2)/(2*A_MIN_ROBOT_BRAKE))+EPSILON
+            d_min=D_MIN_WALL+EPSILON
         return d_min
 
 
@@ -151,11 +133,21 @@ class SafetyEnvelope:
         # value to the true robot physical limits
         robot_predicted_v_x, robot_predicted_v_y = main_function_action[0] * max_advance_robot, main_function_action[1] * max_advance_robot
         robot_predicted_speed = np.sqrt(robot_predicted_v_x ** 2 + robot_predicted_v_y ** 2)
-        print(f"robot action speed ({robot_predicted_v_x,robot_predicted_v_y})")
         return robot_predicted_speed
 
     def compute_min_distance_to_wall(self,obs):
-        # fix error key walls do not exist in obs because of setting padding to True to prevent failure of reshape from SB3
+        """
+        :param obs: observation
+        :return: minimum distance to any wall
+        """
+        wall_distances=self.compute_distances_to_walls(obs)
+        return min(wall_distances)
+
+    def compute_distances_to_walls(self, obs):
+        """
+        :param obs: observation
+        :return: return distance from robot footprint to the four walls
+        """
         robot_radius = obs["robot"][8]
         robot_x_world_frame = self.env.get_wrapper_attr("robot").x
         robot_y_world_frame = self.env.get_wrapper_attr("robot").y
@@ -170,8 +162,8 @@ class SafetyEnvelope:
         d_right = (HALF_SIZE_X - robot_x_world_frame) - robot_radius  # distance to right wall
         d_bottom = (robot_y_world_frame - (-HALF_SIZE_Y)) - robot_radius  # distance to bottom wall
         d_top = (HALF_SIZE_Y - robot_y_world_frame) - robot_radius  # distance to top wall
-        # The minimum distance to any wall
-        return min(d_left, d_right, d_bottom, d_top)
+        return [d_left, d_right, d_bottom, d_top]
+
 
 
     @staticmethod

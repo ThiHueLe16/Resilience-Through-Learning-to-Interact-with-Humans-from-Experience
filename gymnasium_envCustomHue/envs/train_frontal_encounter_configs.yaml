@@ -2,10 +2,9 @@ scenario:
   mode: "train"
   deterministic: False
 
-  aisle_width: [2.0, 6.0]
-  randomize_aisle_width: True
-  aisle_center_y: 0.0
+  aisle_width: [6, 6] #ORIGINAL 5
+#  aisle_center_y: 0.0
 
   offset_from_center: ["left", "right", "middle"]
-  alignment_mode: "both" # set alignment mode options: "unaligned-left-right"  or "unaligned-right-left , "aligned" or "both"
+  alignment_mode: "both" # set alignment mode options:"both", "aligned-middle","aligned-middle","aligned-right","unaligned-lr-middle","unaligned-lr-near-left","unaligned-lr-near-right","unaligned-rl-middle","unaligned-rl-near-left","unaligned-rl-near-right"
 

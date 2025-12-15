@@ -1,0 +1,2 @@
+architecture,num_episodes,success_rate,intervention_rate,mean_path_length,mean_episode_duration,mean_average_velocity,mean_min_distance_to_human,mean_utility
+B3,17,1.0,0.0,11.555820382884978,116.0,0.09962015025826725,1.86571855689074,0.883069149358109

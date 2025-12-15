@@ -11,12 +11,18 @@ import torch
 import numpy as np
 import yaml
 from gymnasium import spaces
-from socnavgym.envs.utils.plant import Plant
 from SocNavGym.socnavgym.envs import SocNavEnv_v1
 from SocNavGym.socnavgym.envs.socnavenv_v1 import SocNavGymObject
 import random
 from socnavgym.envs.socnavenv_v1 import SocNavEnv_v1, SocNavGymObject
-from socnavgym.envs.utils.plant import Plant
+import rvo2
+from gymnasium import spaces
+from shapely.geometry import Point, Polygon
+from collections import namedtuple
+import math
+from math import ceil
+from enum import Enum
+
 from socnavgym.envs.utils.human import Human
 from socnavgym.envs.utils.human_human import Human_Human_Interaction
 from socnavgym.envs.utils.human_laptop import Human_Laptop_Interaction
@@ -53,11 +59,6 @@ class FrontalEncounter(SocNavEnv_v1):
 
         with open(socnavgym_env_config, "r") as socnavenv_ymlfile:
             socnavenv_config = yaml.safe_load(socnavenv_ymlfile)
-
-
-        # HALF_SIZE_X = self.MAP_X / 2. - self.MARGIN
-        # HALF_SIZE_Y = self.MAP_Y / 2. - self.MARGIN
-
         self.mode= custom_config["scenario"]["mode"]
         # set custom aisle width in the socnavenvgym config. set robot, human start_y lane based on the alignment mode.
         if self.mode == "train":
@@ -68,30 +69,16 @@ class FrontalEncounter(SocNavEnv_v1):
             self.alignment_mode = custom_config["scenario"]["alignment_mode"]
             # current_alignment mode is used to save the current mode chosen in training in set_y_robot
             self.current_alignment_mode=self.alignment_mode
-
-
         else: #in eval mode
-            # assert scenario_index is not None, "scenario_index required in eval mode"
-            # scenario_aisle_width= custom_config["scenario"]["eval_scenarios"][scenario_index]["aisle_width"]
-            # socnavenv_config["env"]["min_map_y"] =scenario_aisle_width
-            # socnavenv_config["env"]["max_map_y"] = scenario_aisle_width
-            # # set alignment mode for the custom env to use in the reset()
-            # self.alignment_mode = custom_config["scenario"]["eval_scenarios"][scenario_index]["alignment_mode"]
-            # current_alignment mode is used to save the current mode chosen in training in set_y_robot
-            # self.current_alignment_mode = self.alignment_mode
-            # Load all eval scenario config.EVAL ENV SETUP
             self.eval_scenario=custom_config["scenario"]["eval_scenarios"]
             self.num_eval_scenario=len(self.eval_scenario)
             # This index will be used by reset() when eval callback to load the next scenario
             self.current_eval_index=0
 
-            # self.y_r = custom_config["scenario"]["eval_scenarios"][scenario_index]["robot_y"]
-            # self.y_h = custom_config["scenario"]["eval_scenarios"][scenario_index]["human_y"]
-            # self.robot_start_y_lane, self.human_start_y_lane= self.set_robot_human_start_y_lane()
-
         # use self.y_r, self.y_h to log the y-coordinator of robot, and then later use y_r to set y_h during training. because y_r , y_h are sampled on different calls.
         # additinally, use y_r, y_h to set the goal of human and robot and human, which is sample on different calls.
         self.y_r, self.y_h = None, None
+        self.d_path=None
 
 
         # write the modified socnaenv_config dict back to an .yaml file. otherwise error "TypeError: expected str, bytes or os.PathLike object, not dict" appear
@@ -106,7 +93,10 @@ class FrontalEncounter(SocNavEnv_v1):
         super().__init__(config=self.tmp_config_path, render_mode=render_mode)
         # use padding ->all wrapper will see fix-length vector. Otherwise SB3 will complain about shapes changing between episode
         # ( in our case: dynamic width-> wall shape vector change)
-        self.set_padded_observations(True)
+        # NO PADD CAUSE NOW THE WIDTH IS FIX
+        # self.set_padded_observations(True)
+
+
         # self.is_entity_present["plants"] = False
         # self.is_entity_present["tables"] = False
         # self.is_entity_present["chairs"] = False
@@ -135,67 +125,31 @@ class FrontalEncounter(SocNavEnv_v1):
         :param delta: distance between 2 centers of human and robot
         :return: start y-coordinator of robot
         """
-        mode= self.alignment_mode
-        if mode=="both":
-            # mode=random.choice(["aligned-middle","aligned-middle","aligned-right","unaligned-lr-middle","unaligned-lr-near-left","unaligned-lr-near-right","unaligned-rl-middle","unaligned-rl-near-left","unaligned-rl-near-right"])
-            mode= random.choice(["aligned","unaligned-top-bottom","unaligned-bottom-top"])
+        y_r=None
+        # set self.d_path for training
+        if self.mode== "train":
+            self.current_alignment_mode = random.choice(["aligned", "unaligned-top-bottom", "unaligned-bottom-top"])
+            match self.current_alignment_mode:
+                case "aligned":
+                    self.d_path = 0.0
+                case "unaligned-top-bottom":
+                    while self.d_path == None or self.d_path == 0:
+                        self.d_path = random.uniform(0, delta)
+                case "unaligned-bottom-top":
+                    while self.d_path == None or self.d_path == 0:
+                        self.d_path = random.uniform(0, delta)
 
-        y_r= None
-        match mode:
+        # set y_r
+        match self.current_alignment_mode:
             case "aligned":
-                y_r = self.sample_y_robot_aligned(half_size_y)
+                y_r=self.d_path
             case "unaligned-top-bottom":
-                y_r = self.sample_y_robot_unaligned("top-bottom", half_size_y, r_r, r_h)
+                y_r= self.d_path/2
             case "unaligned-bottom-top":
-                y_r = self.sample_y_robot_unaligned("bottom-top", half_size_y, r_r, r_h)
-
-        # match mode:
-        #     case "aligned-middle":
-        #         y_r = self.sample_aligned_middle(half_size_y, delta)
-        #     case "aligned-left":
-        #         y_r = self.sample_aligned_near_left(half_size_y,delta)
-        #     case "aligned-right":
-        #         y_r = self.sample_aligned_near_right(half_size_y, delta)
-        #     case "unaligned-lr-middle":
-        #         y_r= self.sample_lr_middle(half_size_y, delta)
-        #     case "unaligned-lr-near-left":
-        #         y_r = self.sample_lr_near_left(half_size_y, r_r,r_h, delta)
-        #     case "unaligned-lr-near-right":
-        #         y_r= self.sample_lr_near_right(half_size_y,r_r,delta )
-        #     case "unaligned-rl-middle":
-        #         y_r = self.sample_rl_middle(half_size_y, delta)
-        #     case "unaligned-rl-near-left":
-        #         y_r = self.sample_rl_near_left(half_size_y,r_r, delta)
-        #     case "unaligned-rl-near-right":
-        #         y_r= self.sample_rl_near_right(half_size_y,r_r, delta)
-        self.current_alignment_mode = mode
-        print(f"current_alignment_mode:{self.current_alignment_mode}")
+                y_r = -self.d_path/2
         self.y_r= y_r
         return y_r
-    # def set_y_human(self,half_size_y, r_h, y_r, current_alignment_mode,  delta):
-    #     """
-    #
-    #     :param half_size_y:
-    #     :param r_h: radius of human = HUMAN_DIAMETER/2
-    #     :param y_r: y-coordinator of robot
-    #     :return: initial y-coordinator of human based on alignment mode and robot's y-coordinator
-    #     """
-    #
-    #     mode = self.current_alignment_mode
-    #     y_h= None
-    #     if self.mode=='eval':
-    #         # load fix y-coordinator of human in custom eval scenario
-    #         y_h= self.eval_scenario[self.current_eval_index]["human_y"]
-    #     else:
-    #         match mode:
-    #             case  "aligned-middle" | "aligned-left" | "aligned-right":
-    #                 y_h= self.sample_y_human_aligned(y_r)
-    #             case "unaligned-lr-middle"|"unaligned-lr-near-left"| "unaligned-lr-near-right":
-    #                 y_h = self.sample_y_human_lr(half_size_y, r_h, y_r, delta)
-    #             case "unaligned-rl-middle" |  "unaligned-rl-near-left" |"unaligned-rl-near-right":
-    #                 y_h= self.sample_y_human_rl(half_size_y, r_h, y_r, delta)
-    #     self.y_h=y_h
-    #     return y_h
+
     def set_y_human(self, half_size_y, r_h, y_r, current_alignment_mode, delta):
         """
             #
@@ -204,50 +158,21 @@ class FrontalEncounter(SocNavEnv_v1):
             #     :param y_r: y-coordinator of robot
             #     :return: initial y-coordinator of human based on alignment mode and robot's y-coordinator
             #     """
-
-        mode = self.current_alignment_mode
-        y_h= None
-        if self.mode=='eval':
-            # load fix y-coordinator of human in custom eval scenario
-            y_h= self.eval_scenario[self.current_eval_index]["human_y"]
-        else:
-            match mode:
-                case  "aligned":
-                    y_h= y_r
-                case "unaligned-top-bottom":
-                    y_h = FrontalEncounter.sample_y_human_unaligned("top-bottom", y_r,r_h,delta, half_size_y)
-                case "unaligned-bottom-top":
-                    y_h= FrontalEncounter.sample_y_human_unaligned("bottom-top", y_r,r_h,delta, half_size_y)
+        y_h=None
+        match self.current_alignment_mode:
+            case "aligned":
+                y_h = 0.0
+            case "unaligned-top-bottom":
+                y_h = -self.d_path/2
+            case "unaligned-bottom-top":
+                y_h = self.d_path/2
         self.y_h=y_h
         return y_h
-    @staticmethod
-    def sample_y_human_unaligned(unaligned_mode, y_r, r_h, delta, half_y ):
-        """
 
-        :param unaligned_mode:"top-bottom" or "bottom-top"
-        :param y_r: y-coordinator of robot
-        :param r_h: radius of human
-        :param delta: sum of r_r and r_H
-        :param half_y:
-        :return: y-coordinator of human for unaligned top_bottom and unaligned bottom-top case
-        """
-        y_h=0
-        while(True):
-            m=random.uniform(0, delta)
-            if m==0:
-                continue
-            if unaligned_mode=="top-bottom":
-                y_h=y_r-m
-            else:
-                y_h=y_r+m
-            if -half_y + r_h <= y_h <= half_y -r_h:
-                break
-        return y_h
 
     @staticmethod
     def sample_uniform(low: float, high: float) -> float:
         """
-
         :param low: lower range
         :param high: upper range
         :return: a random number in range [low , high] or [low, high) depend on rounding
@@ -255,288 +180,8 @@ class FrontalEncounter(SocNavEnv_v1):
         """Simple helper with sanity check."""
         assert high > low, f"Invalid range: [{low}, {high}]"
         return random.uniform(low, high)
-    def sample_y_robot_aligned(self,half_size_y: float ):
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2)
-
-        low = -half_size_y + margin
-        high = half_size_y - margin
-        y0 = FrontalEncounter.sample_uniform(low, high)
-        return y0
-    @staticmethod
-    def sample_y_robot_unaligned(unaligned_mode, half_size_y, r_r, r_h):
-        y_r=0
-        if  unaligned_mode=="top-bottom":
-            low=-half_size_y+max(r_h, r_r)
-            high=half_size_y-r_r
-            while True:
-                y_r=FrontalEncounter.sample_uniform(low, high)
-                if y_r!=low:
-                    break
-        else:
-            low=-half_size_y+r_r
-            high= half_size_y-max(r_r, r_h)
-            while True:
-                y_r=FrontalEncounter.sample_uniform(low, high)
-                if y_r!=high:
-                    break
-        return y_r
 
 
-    def sample_aligned_middle(self,half_size_y: float, delta):
-        """Aligned (same lane), far from both walls."""
-
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2)
-
-        low = -half_size_y + margin + delta
-        high = half_size_y - margin - delta
-        if high <= low:
-            # Corridor too narrow for strict margin
-            low = -half_size_y + margin
-            high = half_size_y - margin
-        y0 = FrontalEncounter.sample_uniform(low, high)
-        return y0
-
-    def sample_aligned_near_left(self,half_size_y:float, delta):
-        """Aligned, near left wall (y = +halfy)."""
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2)
-        low = half_size_y - margin -  delta
-        high = half_size_y - margin
-        y0 = FrontalEncounter.sample_uniform(low, high)
-        return y0
-
-    def sample_aligned_near_right(self, half_size_y: float, delta):
-        """Aligned, near right wall (y = -halfy)."""
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER/2, delta)
-        low = -half_size_y + margin
-        high = -half_size_y + margin +  delta
-        y0 = FrontalEncounter.sample_uniform(low, high)
-        return y0
-
-
-    # -------------------------------
-    # Unaligned Left–Right (robot LEFT, human RIGHT): y_r > y_h
-    # -------------------------------
-
-    def sample_lr_middle(self, half_size_y: float, delta):
-        """Unaligned Left–Right, middle (both sides free)."""
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2, delta)
-        # robot far from both walls
-        y_r_low = -half_size_y+ margin + delta
-        y_r_high = half_size_y- margin -  delta
-        if y_r_high <= y_r_low:
-            # Corridor too narrow for strict delta → relax
-            y_r_low = -half_size_y + margin
-            y_r_high = half_size_y- margin
-        y_r = FrontalEncounter.sample_uniform(y_r_low, y_r_high)
-        return y_r
-
-    def sample_lr_near_left(self, half_size_y: float, r_r: float,r_h:float, delta):
-        """Unaligned Left–Right, near left wall (robot close to y=+halfy, can only evade right)."""
-        # robot close to left wall
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2, delta)
-        y_r_low = half_size_y - margin-  delta
-        y_r_high = half_size_y - r_r
-        # ensure we don’t violate human-right constraint: y_r >= -H + r_h
-        y_r_low = max(y_r_low, -half_size_y + r_h)
-        if  y_r_high <= y_r_low:
-            # Degenerate band; fall back to LR-middle
-            y_r= self.sample_lr_middle(half_size_y, delta)
-        else:
-            y_r = FrontalEncounter.sample_uniform(y_r_low, y_r_high)
-        return y_r
-
-    def sample_lr_near_right(self, half_size_y: float,r_r:float, delta):
-        """Unaligned Left–Right, near right wall (robot close to y=-halfy, can only evade left)."""
-        # robot close to right wall
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2, delta)
-        y_r_low = -half_size_y + margin
-        y_r_high = min(-half_size_y + margin + delta, half_size_y-r_r)
-
-        if y_r_high <= y_r_low:
-            # Degenerate band; fall back to LR-middle-too narrow
-            print("Degenerate band; fall back to LR-middle")
-            y_r = self.sample_lr_middle(half_size_y, delta)
-        else:
-            y_r = FrontalEncounter.sample_uniform(y_r_low, y_r_high)
-        return y_r
-
-    def sample_y_human_lr(self,half_size_y,  r_h, y_r , delta):
-        """
-        :param r_h: radius of human
-        :param y_r: y_coordinator of robot . self.y_r
-        :return: y_human to the right: y_h < y_r, within Delta and not touching right wall
-        """
-        y_h_low = max(-half_size_y + r_h, y_r -  delta)
-        y_h_high =min(y_r, half_size_y - r_h)
-        y_h = FrontalEncounter.sample_uniform(y_h_low, y_h_high)
-        if y_h_high <= y_h_low:
-            # Fallback: put human just at y_r - small eps (still right of robot).
-            return y_r - min(delta, 1e-3)
-        return y_h
-
-    # -------------------------------
-    # Unaligned Right–Left (robot RIGHT, human LEFT): y_r < y_h
-    # -------------------------------
-
-    def sample_rl_middle(self,half_size_y: float, delta):
-        """Unaligned Right–Left, middle (both sides free)."""
-        # robot far from both walls
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2, delta)
-        y_r_low = -half_size_y + margin + delta
-        y_r_high = half_size_y - margin -delta
-        if y_r_high <= y_r_low:
-            # Corridor too narrow for strict delta → relax
-            y_r_low = -half_size_y + margin
-            y_r_high =half_size_y - margin
-
-        y_r = FrontalEncounter.sample_uniform(y_r_low, y_r_high)
-        return y_r
-
-    def sample_rl_near_left(self, half_size_y: float,r_r:float, delta) :
-        """Unaligned Right–Left, near left wall (robot close to y=+halfy, can only evade right)."""
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2, delta)
-        # robot close to left wall
-        y_r_low = max(half_size_y - margin- delta, -half_size_y +r_r)
-        y_r_high = half_size_y-margin
-        if y_r_high <= y_r_low:
-            # Degenerate band; fall back to RL-middle
-            print("Degenerate band; fall back to RL-middle")
-            y_r = self.sample_rl_middle(half_size_y, delta)
-        else:
-            y_r = FrontalEncounter.sample_uniform(y_r_low, y_r_high)
-        return y_r
-
-    def sample_rl_near_right(self, half_size_y: float, r_r: float, delta) :
-        """Unaligned Right–Left, near right wall (robot close to y=-halfy, can only evade left)."""
-        margin = max(self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2, delta)
-        # robot close to right wall
-        y_r_low = -half_size_y + r_r
-        y_r_high = min(-half_size_y + margin+ delta, half_size_y-r_r)
-        if y_r_high <= y_r_low:
-            # Degenerate band; fall back to RL-middle
-            print("Degenerate band; fall back to RL-middle")
-            y_r = self.sample_rl_middle(half_size_y, delta)
-        else:
-            y_r = FrontalEncounter.sample_uniform(y_r_low, y_r_high)
-        return y_r
-
-    def sample_y_human_rl(self, half_size_y, r_h, y_r,delta):
-        """
-
-        :param half_size_y: half of the width
-        :param r_h: radius of human = HUMAN_DIAMETER/2
-        :param y_r: y-coordinator of robot
-        :return: human to the left: y_h > y_r, within Delta and not touching left wall
-        """
-
-        y_h_low = max(y_r, -half_size_y+ r_h)
-        y_h_high = min(half_size_y - r_h, y_r + delta)
-        if y_h_high <= y_h_low:
-            # Geometry impossible with current y_r → fallback:
-            # put human just slightly left of robot.
-            y_h = y_r + min(delta, 1e-3)
-
-            return y_h
-        y_h = FrontalEncounter.sample_uniform(y_h_low, y_h_high)
-        assert y_h >= y_r, "y_h must be >= y_r for RL"
-        assert y_h - y_r <= delta + 1e-6, f"distance too large: {y_h - y_r} > {delta}"
-        return y_h
-
-    # def __init__(self, config: str = None, render_mode: str = None) -> None:
-    #     super().__init__(config=config, render_mode=render_mode)
-    #     self.alertness_value = None
-    #     self.safety_envelope_intervenes = False
-
-
-
-    # def sample_y_in_lane(half_size_y, lane: str)->float:
-    #     """
-    #         Define a helper to sample y inside a lane (middle, left-, right-range)
-    #     """
-    #     if lane == "middle":
-    #         return 0.0
-    #     elif lane == "left":
-    #         r=0
-    #         while r==0:
-    #             r=random.uniform(0.0, half_size_y)
-    #         return r
-    #     elif lane =="right":
-    #         r = 0
-    #         while r == 0:
-    #             r =random.uniform(-half_size_y, 0.0)
-    #         return r
-    #     else:
-    #         raise ValueError(f"Unknown lane:{lane}")
-
-    # def set_robot_human_start_y_lane(self):
-    #     """
-    #         Ude alignment mode to pick and set start y-position lane (middle, left, right) for robot and human.
-    #     """
-    #     mode= self.alignment_mode
-    #     if mode=="both":
-    #         random_number=random.random()
-    #         if random_number< 1.0/3.0:
-    #             mode="aligned"
-    #         elif random_number <2.0/3.0:
-    #             mode="unaligned-left-right"
-    #         else:
-    #             mode="unaligned-right-left"
-    #     if mode=="aligned":
-    #         # both in same lane
-    #         lane=random.choice(["left", "middle", "right"])
-    #         robot_start_y_lane=lane
-    #         human_start_y_lane=lane
-    #
-    #     elif mode=="unaligned-left-right":
-    #         robot_start_y_lane = "left"
-    #         human_start_y_lane ="right"
-    #     elif mode=="unaligned-right-left":
-    #         robot_start_y_lane = "right"
-    #         human_start_y_lane = "left"
-    #     else:
-    #         raise ValueError(f"Unknown alignment mode:{mode}")
-    #
-    #     return robot_start_y_lane, human_start_y_lane
-
-        # if mode=="aligned":
-        #     # both in same lane
-        #     lane=random.choice(["left", "middle", "right"])
-        #     robot_start_y=FrontalEncounter.sample_y_in_lane(half_size_y,lane)
-        #     human_start_y=FrontalEncounter.sample_y_in_lane(half_size_y, lane)
-        # elif mode=="unaligned-left-right":
-        #     robot_start_y = FrontalEncounter.sample_y_in_lane(half_size_y, "left")
-        #     human_start_y = FrontalEncounter.sample_y_in_lane(half_size_y, "right")
-        # elif mode=="unaligned-right-left":
-        #     robot_start_y = FrontalEncounter.sample_y_in_lane(half_size_y, "right")
-        #     human_start_y = FrontalEncounter.sample_y_in_lane(half_size_y, "left")
-        # else:
-        #     raise ValueError(f"Unknown alignment mode:{mode}")
-        # return self.robot_start_y, self.human_start_y
-
-
-    # @staticmethod
-    # def line_from_points(x1, y1, x2, y2):
-    #     """
-    #         Generate the line that go through 2 points (x1, y1), (x2, y2)
-    #     """
-    #     if x1==x2:
-    #         # vertical line case. Do not exist in our scenario. cause the start position of robot and human is always on the diffeent side of corridor
-    #         return None, None
-    #     # slope a
-    #     a= (y2-y1)/(x2-x1)
-    #     # intercept b
-    #     b= y1-a*x1
-    #     return a,b
-
-    # @staticmethod
-    # def set_custom_goal_position(x1, y1, x2, y2, x_min, x_max):
-    #     """
-    #         Generate a random point between x_min and x_max on the line y=ax+b that go through 2 points (x1, y1), (x2, y2)
-    #     """
-    #     a,b = FrontalEncounter.line_from_points(x1, y1, x2, y2)
-    #     x= random.uniform(x_min, x_max)
-    #     y= a*x +b
-    #     return x,y
 
     def set_custom_goal_position(self, x_low, x_high, object_type: SocNavGymObject):
         x = random.uniform(x_low, x_high)
@@ -547,285 +192,14 @@ class FrontalEncounter(SocNavEnv_v1):
             y=self.y_h
         return x, y
 
-    def try_reset(self, seed=None, options=None):
-        """
-        Resets the environment
-        """
-        # todo delete
-        print(f"mode : {self.mode}")
-        start_time = time.time()
-        if not self.has_configured:
-            raise Exception("Please pass in the keyword argument config=\"path to config\" while calling gym.make")
-        self.cumulative_reward = 0
-
-        # setting seed
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
-
-        # randomly initialize the parameters
-        self.randomize_params()
-        self.id = 1
-        # EVAL
-        if self.mode =="eval":
-            self.MAP_Y=self.eval_scenario[self.current_eval_index]["aisle_width"]
-
-        HALF_SIZE_X = self.MAP_X / 2. - self.MARGIN
-        HALF_SIZE_Y = self.MAP_Y / 2. - self.MARGIN
-
-        # keeping track of the scenarios for sngnn reward
-        self.sn_sequence = []
-
-        # to keep track of the current objects
-        self.objects = []
-        self.laptops = []
-        self.walls = []
-        self.static_humans = []
-        self.dynamic_humans = []
-        self.plants = []
-        self.tables = []
-        self.chairs = []
-        self.goals: Dict[
-            int, Plant] = {}  # dictionary to store all the goals. The key would be the id of the entity. The goal would be a Plant object so that collision checks can be done.
-        self.moving_interactions = []  # a list to keep track of moving interactions
-        self.static_interactions = []
-        self.h_l_interactions = []
-
-        # clearing img_list
-        if self.img_list is not None:
-            del self.img_list
-            self.img_list = None
-
-        # variable that shows whether a crowd is being formed currently or not
-        self.crowd_forming = False
-
-        # variable that shows whether a human-laptop-interaction is being formed or not
-        self.h_l_forming = False
-
-        # adding walls to the environment
-        self._add_walls()
-
-        # robot
-        robot = self._sample_object(start_time, SocNavGymObject.ROBOT)
-        if robot == None:
-            return False, None, None
-        self.robot = robot
-        self.objects.append(self.robot)
-
-        # making a copy of the robot for calculating time taken by a robot that has orca policy
-        self.robot_orca = copy.deepcopy(self.robot)
-        # defining a few parameters for the orca robot
-        self.has_orca_robot_reached_goal = False
-        self.has_orca_robot_collided = False
-        self.orca_robot_reach_time = None
-        self.orca_robot_path_length = 0
-
-        # dynamic humans
-        for _ in range(self.NUMBER_OF_DYNAMIC_HUMANS):  # spawn specified number of humans
-            human = self._sample_object(start_time, SocNavGymObject.DYNAMIC_HUMAN)
-            if human == None:
-                return False, None, None
-            self.dynamic_humans.append(human)
-            self.objects.append(human)
-            self.id += 1
-
-        # static humans
-        for _ in range(self.NUMBER_OF_STATIC_HUMANS):  # spawn specified number of humans
-            human = self._sample_object(start_time, SocNavGymObject.STATIC_HUMAN)
-            if human == None:
-                return False, None, None
-            self.static_humans.append(human)
-            self.objects.append(human)
-            self.id += 1
-
-        # plants
-        for _ in range(self.NUMBER_OF_PLANTS):  # spawn specified number of plants
-            plant = self._sample_object(start_time, SocNavGymObject.PLANT)
-            if plant == None:
-                return False, None, None
-            self.plants.append(plant)
-            self.objects.append(plant)
-            self.id += 1
-
-        # tables
-        for _ in range(self.NUMBER_OF_TABLES):  # spawn specified number of tables
-            table = self._sample_object(start_time, SocNavGymObject.TABLE)
-            if table == None:
-                return False, None, None
-            self.tables.append(table)
-            self.objects.append(table)
-            self.id += 1
-
-        # chairs
-        for _ in range(self.NUMBER_OF_CHAIRS):  # spawn specified number of chairs
-            chair = self._sample_object(start_time, SocNavGymObject.CHAIR)
-            if chair == None:
-                return False, None, None
-            self.chairs.append(chair)
-            self.objects.append(chair)
-            self.id += 1
-
-        # laptops
-        if (len(self.tables) == 0):
-            pass
-        elif self.NUMBER_OF_LAPTOPS + self.NUMBER_OF_H_L_INTERACTIONS + self.NUMBER_OF_H_L_INTERACTIONS_NON_DISPERSING > 4 * self.NUMBER_OF_TABLES:
-            raise AssertionError("Number of laptops exceeds the number of edges available on tables")
-        else:
-            for _ in range(self.NUMBER_OF_LAPTOPS):  # placing laptops on tables
-                laptop = self._sample_object(start_time, SocNavGymObject.LAPTOP)
-                if laptop == None:
-                    return False, None, None
-                self.laptops.append(laptop)
-                self.objects.append(laptop)
-                self.id += 1
-
-        # interactions
-        for ind in range(self.NUMBER_OF_H_H_DYNAMIC_INTERACTIONS):
-            i = self._sample_object(start_time, SocNavGymObject.HUMAN_HUMAN_INTERACTION_DYNAMIC,
-                                    extra_info={"index": ind})
-            if i == None:
-                return False, None, None
-            self.moving_interactions.append(i)
-            self.objects.append(i)
-            for human in i.humans:
-                human.id = self.id
-                self.id += 1
-
-        for ind in range(self.NUMBER_OF_H_H_DYNAMIC_INTERACTIONS_NON_DISPERSING):
-            i = self._sample_object(start_time, SocNavGymObject.HUMAN_HUMAN_INTERACTION_DYNAMIC_NON_DISPERSING,
-                                    extra_info={"index": ind})
-            if i == None:
-                return False, None, None
-            self.moving_interactions.append(i)
-            self.objects.append(i)
-            for human in i.humans:
-                human.id = self.id
-                self.id += 1
-
-        for ind in range(self.NUMBER_OF_H_H_STATIC_INTERACTIONS):
-            i = self._sample_object(start_time, SocNavGymObject.HUMAN_HUMAN_INTERACTION_STATIC,
-                                    extra_info={"index": ind})
-            if i == None:
-                return False, None, None
-            self.static_interactions.append(i)
-            self.objects.append(i)
-            for human in i.humans:
-                human.id = self.id
-                self.id += 1
-
-        for ind in range(self.NUMBER_OF_H_H_STATIC_INTERACTIONS_NON_DISPERSING):
-            i = self._sample_object(start_time, SocNavGymObject.HUMAN_HUMAN_INTERACTION_STATIC_NON_DISPERSING,
-                                    extra_info={"index": ind})
-            if i == None:
-                return False, None, None
-            self.static_interactions.append(i)
-            self.objects.append(i)
-            for human in i.humans:
-                human.id = self.id
-                self.id += 1
-
-        for _ in range(self.NUMBER_OF_H_L_INTERACTIONS):
-            # sampling a laptop
-            laptop, interaction = self._sample_human_laptop_interaction(start_time,
-                                                                        SocNavGymObject.HUMAN_LAPTOP_INTERACTION)
-            if laptop == None or interaction == None:
-                return False, None, None
-            self.h_l_interactions.append(interaction)
-            self.objects.append(interaction)
-            self.id += 1
-            interaction.human.id = self.id
-            self.id += 1
-
-        for _ in range(self.NUMBER_OF_H_L_INTERACTIONS_NON_DISPERSING):
-            # sampling a laptop
-            laptop, interaction = self._sample_human_laptop_interaction(start_time,
-                                                                        SocNavGymObject.HUMAN_LAPTOP_INTERACTION_NON_DISPERSING)
-            if laptop == None or interaction == None:
-                return False, None, None
-            self.h_l_interactions.append(interaction)
-            self.objects.append(interaction)
-            self.id += 1
-            interaction.human.id = self.id
-            self.id += 1
-
-        # assigning ids to walls
-        for wall in self.walls:
-            wall.id = self.id
-            self.id += 1
-
-        # adding goals
-        for human in self.dynamic_humans:
-            o = self.sample_goal(self.HUMAN_GOAL_RADIUS, HALF_SIZE_X, HALF_SIZE_Y)
-            if o is None:
-                return False, None, None
-            self.goals[human.id] = o
-            human.set_goal(o.x, o.y)
-
-        for human in self.static_humans:
-            self.goals[human.id] = Plant(id=None, x=human.x, y=human.y, radius=self.HUMAN_GOAL_RADIUS)
-            human.set_goal(human.x, human.y)  # setting goal of static humans to where they are spawned
-
-        robot_goal = self.sample_goal(self.GOAL_RADIUS, HALF_SIZE_X, HALF_SIZE_Y)
-        if robot_goal is None:
-            return False, None, None
-        self.goals[self.robot.id] = robot_goal
-        self.robot.goal_x = robot_goal.x
-        self.robot.goal_y = robot_goal.y
-        self.robot.goal_a = random.uniform(-np.pi, np.pi)
-        self.robot_orca.goal_x = robot_goal.x
-        self.robot_orca.goal_y = robot_goal.y
-        self.robot_orca.goal_a = self.robot.goal_a
-
-        for i in self.moving_interactions:
-            o = self.sample_goal(self.INTERACTION_GOAL_RADIUS, HALF_SIZE_X, HALF_SIZE_Y)
-            if o is None:
-                return False, None, None
-            for human in i.humans:
-                self.goals[human.id] = o
-            i.set_goal(o.x, o.y)
-
-        self._is_terminated = False
-        self._is_truncated = False
-        self._collision = False
-        self.ticks = 0
-        self.compliant_count = 0  # keeps track of how many times the agent is outside the personal space of humans
-        self.prev_goal_distance = np.sqrt(
-            (self.robot.x - self.robot.goal_x) ** 2 + (self.robot.y - self.robot.goal_y) ** 2)
-        self.robot_path_length = 0
-        self.stalled_time = 0
-        self.failure_to_progress = 0
-        self.v_min = float("inf")
-        self.v_max = 0.0
-        self.v_avg = 0.0
-        self.prev_vel = np.array([0.0, 0.0], dtype=np.float32)
-        self.a_min = float("inf")
-        self.a_max = 0.0
-        self.a_avg = 0.0
-        self.prev_a = np.array([0.0, 0.0], dtype=np.float32)
-        self.jerk_min = float("inf")
-        self.jerk_max = 0.0
-        self.jerk_avg = 0.0
-
-        # all entities in the environment
-        self.count = 0
-
-        # a dictionary indexed by the id of the entity that stores the previous state observations for all the entities (except walls)
-        self._prev_observations: Dict[int, EntityObs] = {}
-        self._current_observations: Dict[int, EntityObs] = {}
-        self.populate_prev_obs()
-
-        obs = self._get_obs()
-
-        self.reward_calculator.re_init(self)
-        if self.reward_calculator.use_sngnn:
-            self.reward_calculator.sngnn = SocNavAPI(
-                device=('cuda' + str(self.cuda_device) if torch.cuda.is_available() else 'cpu'), params_dir=(
-                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "utils", "sngnnv2", "example_model")))
-
-        # reset current eval index . next reset -> next scenario
-        self.current_eval_index= (self.current_eval_index+1)%self.num_eval_scenario
-
-        return True, obs, {}
+    def set_eval_custom_goal_position(self,object_type: SocNavGymObject):
+        if object_type == SocNavGymObject.ROBOT:
+            x = float(self.eval_scenario[self.current_eval_index]["x_goal_r"])
+            y = self.y_r
+        elif object_type == SocNavGymObject.DYNAMIC_HUMAN:
+            x = float(self.eval_scenario[self.current_eval_index]["x_goal_h"])
+            y = self.y_h
+        return x, y
 
 
     def _get_kwargs(self, object_type: SocNavGymObject, extra_info: dict = None):
@@ -840,14 +214,18 @@ class FrontalEncounter(SocNavEnv_v1):
         if object_type == SocNavGymObject.ROBOT:
 
             # custom x, y_position -FOR THESIS
-            if(self.mode=="eval"):
-                #EVAL
-                self.y_r=self.eval_scenario[self.current_eval_index]["robot_y"]
-            else:
-                self.y_r= self.set_y_robot(HALF_SIZE_Y, self.ROBOT_RADIUS,self.HUMAN_DIAMETER/2,  DELTA)
+            # if(self.mode=="eval"):
+            #     #EVAL
+            #     self.y_r=self.eval_scenario[self.current_eval_index]["robot_y"]
+            # else:
+            #     self.y_r= self.set_y_robot(HALF_SIZE_Y, self.ROBOT_RADIUS,self.HUMAN_DIAMETER/2,  DELTA)
+            self.y_r = self.set_y_robot(HALF_SIZE_Y, self.ROBOT_RADIUS, self.HUMAN_DIAMETER / 2, DELTA)
             robot_start_y =self.y_r
-            robot_start_x = random.uniform(-HALF_SIZE_X+self.ROBOT_RADIUS+1, -HALF_SIZE_X+self.ROBOT_RADIUS + 1.3)
-            print(f"robot start position in getkwarg ({robot_start_x},{robot_start_y}")
+            if self.mode=="eval":
+                robot_start_x=float(self.eval_scenario[self.current_eval_index]["x_r"])
+            else:
+                robot_start_x = random.uniform(-HALF_SIZE_X+self.ROBOT_RADIUS+1, -HALF_SIZE_X+self.ROBOT_RADIUS + 1.3)
+
             arg_dict = {
                 "id": 0,  # robot is assigned id 0
                 "x":robot_start_x ,
@@ -869,15 +247,13 @@ class FrontalEncounter(SocNavEnv_v1):
                 human_speed = random.uniform(0.0, self.MAX_ADVANCE_HUMAN)
                 human_type = "dynamic"
             # custom x, y_position -FOR THESIS
-            if (self.mode == "eval"):
-                # END EVAL
-                self.y_h = self.eval_scenario[self.current_eval_index]["human_y"]
-            else:
-                # TRAIN
-                self.y_h = self.set_y_human(HALF_SIZE_Y, self.HUMAN_DIAMETER/2, self.y_r, self.current_alignment_mode,DELTA)
+            #  TRAIN
+            self.y_h = self.set_y_human(HALF_SIZE_Y, self.HUMAN_DIAMETER/2, self.y_r, self.current_alignment_mode,DELTA)
             human_start_y=self.y_h
-            human_start_x = random.uniform(HALF_SIZE_X-self.HUMAN_DIAMETER/2-0.3, HALF_SIZE_X-self.HUMAN_DIAMETER/2)
-            print(f"human start position in getkwarg ({human_start_x},{human_start_y}")
+            if self.mode=="eval":
+                human_start_x =float(self.eval_scenario[self.current_eval_index]["x_h"])
+            else:
+                human_start_x = random.uniform(HALF_SIZE_X-self.HUMAN_DIAMETER/2-1.3, HALF_SIZE_X-self.HUMAN_DIAMETER/2-1)
             arg_dict = {
                 "id": self.id,
                 "x": human_start_x,
@@ -1025,7 +401,13 @@ class FrontalEncounter(SocNavEnv_v1):
                 break
             if object_type == SocNavGymObject.ROBOT:
                 # robot_goal_x, robot_goal_y = FrontalEncounter.set_custom_goal_position(self.robot_start_x,self.robot_start_y,self.human_start_x, self.human_start_y,HALF_SIZE_X/2, HALF_SIZE_X)
-                robot_goal_x, robot_goal_y =self.set_custom_goal_position(x_low=HALF_SIZE_X/2, x_high=HALF_SIZE_X,object_type = SocNavGymObject.ROBOT)
+                # orignal , before change
+                # robot_goal_x, robot_goal_y =self.set_custom_goal_position(x_low=HALF_SIZE_X/2, x_high=HALF_SIZE_X-1,object_type = SocNavGymObject.ROBOT)
+                if self.mode=="eval":
+                    robot_goal_x, robot_goal_y=self.set_eval_custom_goal_position(object_type = SocNavGymObject.ROBOT)
+                else:
+                    robot_goal_x, robot_goal_y=self.set_custom_goal_position(x_low=HALF_SIZE_X/2, x_high=HALF_SIZE_X-2,object_type = SocNavGymObject.ROBOT)
+
                 goal = Plant(
                     id=None,
                     x=robot_goal_x,
@@ -1034,7 +416,10 @@ class FrontalEncounter(SocNavEnv_v1):
                 )
             elif object_type == SocNavGymObject.DYNAMIC_HUMAN:
                 # human_goal_x, human_goal_y = FrontalEncounter.set_custom_goal_position(self.robot_start_x,self.robot_start_y,self.human_start_x,self.human_start_y, -HALF_SIZE_X, -HALF_SIZE_X/2)
-                human_goal_x, human_goal_y= self.set_custom_goal_position(x_low=-HALF_SIZE_X, x_high=-HALF_SIZE_X/2, object_type=SocNavGymObject.DYNAMIC_HUMAN)
+                if self.mode=="eval":
+                    human_goal_x, human_goal_y=self.set_eval_custom_goal_position(object_type=SocNavGymObject.DYNAMIC_HUMAN)
+                else:
+                    human_goal_x, human_goal_y= self.set_custom_goal_position(x_low=-HALF_SIZE_X +1, x_high=-HALF_SIZE_X/2, object_type=SocNavGymObject.DYNAMIC_HUMAN)
                 goal = Plant(
                     id=None,
                     x=human_goal_x,
@@ -1061,24 +446,12 @@ class FrontalEncounter(SocNavEnv_v1):
                 if (goal.collides(obj)):
                     collides = True
                     break
-
             if collides:
                 del goal
             else:
                 return goal
         return None
 
-    # def reset(self, seed=None, options=None):
-    #
-    #     self.robot_start_y_lane, self.human_start_y_lane = self.set_robot_human_start_y_lane()
-    #
-    #     print(f" robot-human lane111: {self.robot_start_y_lane, self.human_start_y_lane}")
-    #
-    #     obs, info = super().reset(seed=seed, options=options)  # this calls base try_reset internally
-    #     self.alertness_value = None
-    #     self.safety_envelope_intervenes = False
-    #
-    #     return obs, info
     def randomize_params(self):
         """
         To randomly initialize the number of entities of each type. Specifically, this function would initialize the MAP_SIZE, NUMBER_OF_HUMANS, NUMBER_OF_PLANTS, NUMBER_OF_LAPTOPS and NUMBER_OF_TABLES
@@ -1087,14 +460,14 @@ class FrontalEncounter(SocNavEnv_v1):
         # =============================================
         # ADJUST FOR THESIS.
         # EVAL: Adjust map_y to set width for eval environment
-        if self.mode=="eval":
-            self.MAP_Y = self.eval_scenario[self.current_eval_index]["aisle_width"]
+        # if self.mode=="eval":
+        #     self.MAP_Y = self.eval_scenario[self.current_eval_index]["aisle_width"]
         # =============================================
+
+        if self.shape == "square" or self.shape == "L":
+            self.MAP_Y = self.MAP_X
         else:
-            if self.shape == "square" or self.shape == "L":
-                self.MAP_Y = self.MAP_X
-            else:
-                self.MAP_Y = random.uniform(self.MIN_MAP_Y, self.MAX_MAP_Y)
+            self.MAP_Y = random.uniform(self.MIN_MAP_Y, self.MAX_MAP_Y)
 
         self.ROBOT_RADIUS = self.INITIAL_ROBOT_RADIUS + random.uniform(-self.ROBOT_RADIUS_MARGIN,
                                                                        self.ROBOT_RADIUS_MARGIN)
@@ -1173,6 +546,8 @@ class FrontalEncounter(SocNavEnv_v1):
         self.sfm_n_prime = 1 + np.random.randn() * 0.1
         self.sfm_lambd = 1 + np.random.randn() * 0.1
 
+
+
     def try_reset(self, seed=None, options=None):
         """
         Resets the environment
@@ -1191,13 +566,23 @@ class FrontalEncounter(SocNavEnv_v1):
         self.randomize_params()
         self.id = 1
 
+        # EVAL, set MAP_Y, d_path, THESIS
+        if self.mode == "eval":
+            # self.MAP_Y=self.eval_scenario[self.current_eval_index]["aisle_width"]
+            self.d_path = float(self.eval_scenario[self.current_eval_index]["d_path"])
+            if self.d_path <0:
+                raise ValueError(f"d_path must be > 0 in eval config, got {self.d_path}")
+            self.current_alignment_mode = self.eval_scenario[self.current_eval_index]["alignment_mode"]
+        else:
+            self.d_path = None
+
         HALF_SIZE_X = self.MAP_X / 2. - self.MARGIN
         HALF_SIZE_Y = self.MAP_Y / 2. - self.MARGIN
 
         # reset the start_y human and robot
         # self.y_r = self.set_y_robot(HALF_SIZE_Y)
         # print(f" robot-human start y: {self.y_r, self.y_h}")
-        self.current_alignment_mode=None
+        # self.current_alignment_mode=None
 
         # keeping track of the scenarios for sngnn reward
         self.sn_sequence = []
@@ -1713,15 +1098,16 @@ class FrontalEncounter(SocNavEnv_v1):
 
             )
         }
-
+        max_relative = np.sqrt(self.MAP_X ** 2 + self.MAP_Y ** 2)
+        low_rel = -max_relative
+        high_rel = max_relative
         if self.is_entity_present["humans"]:
             # THESIS: redefine the boundary of the value field human's x-, y-relate to robot in robot frame
             d["humans"] = spaces.Box(
                 low=np.array([0, 0, 0, 0, 0, 0, low_rel, low_rel, -1.0, -1.0,
                               -self.HUMAN_DIAMETER / 2, -(self.MAX_ADVANCE_HUMAN + self.MAX_ADVANCE_ROBOT) * np.sqrt(2),
                               -2 * np.pi / self.TIMESTEP, 0] * ((self.MAX_HUMANS + (
-                            self.MAX_H_L_INTERACTIONS + self.MAX_H_L_INTERACTIONS_NON_DISPERSING) + ((
-                                                                                                                 self.MAX_H_H_DYNAMIC_INTERACTIONS + self.MAX_H_H_DYNAMIC_INTERACTIONS_NON_DISPERSING) * self.MAX_HUMAN_IN_H_H_INTERACTIONS) + (
+                            self.MAX_H_L_INTERACTIONS + self.MAX_H_L_INTERACTIONS_NON_DISPERSING) + ((self.MAX_H_H_DYNAMIC_INTERACTIONS + self.MAX_H_H_DYNAMIC_INTERACTIONS_NON_DISPERSING) * self.MAX_HUMAN_IN_H_H_INTERACTIONS) + (
                                                                              (
                                                                                          self.MAX_H_H_STATIC_INTERACTIONS + self.MAX_H_H_STATIC_INTERACTIONS_NON_DISPERSING) * self.MAX_HUMAN_IN_H_H_INTERACTIONS)) if self.get_padded_observations else self.total_humans),
                              dtype=np.float32),
@@ -1810,5 +1196,416 @@ class FrontalEncounter(SocNavEnv_v1):
                 )
 
         return spaces.Dict(d)
+
+
+    def compute_reward_and_ticks(self, action):
+        """
+        Function to compute the reward and also calculate if the episode has finished
+        """
+        self.ticks += 1
+
+        # calculate the distance to the goal
+        distance_to_goal = np.sqrt((self.robot.goal_x - self.robot.x) ** 2 + (self.robot.goal_y - self.robot.y) ** 2)
+        diff_goal_angle = abs(np.arctan2(np.sin(self.robot.goal_a), np.cos(self.robot.goal_a)) - np.arctan2(
+            np.sin(self.robot.orientation), np.cos(self.robot.orientation)))
+
+        # calculate the distance to goal for the orca robot
+        if (not self.has_orca_robot_collided) and (not self.has_orca_robot_reached_goal):
+            distance_to_goal_orca_robot = np.sqrt(
+                (self.robot_orca.goal_x - self.robot_orca.x) ** 2 + (self.robot_orca.goal_y - self.robot_orca.y) ** 2)
+            # check for object-robot collisions
+            orca_robot_collision = False
+
+            for object in self.static_humans + self.dynamic_humans + self.plants + self.walls + self.tables + self.chairs + self.laptops:
+                if (self.robot_orca.collides(object)):
+                    orca_robot_collision = True
+
+            # interaction-robot collision
+            for i in (self.moving_interactions + self.static_interactions + self.h_l_interactions):
+                if orca_robot_collision:
+                    break
+                if i.collides(self.robot):
+                    orca_robot_collision = True
+                    break
+
+            if orca_robot_collision:
+                self.has_orca_robot_collided = True
+
+            if distance_to_goal_orca_robot < self.GOAL_THRESHOLD:
+                self.has_orca_robot_reached_goal = True
+                self.orca_robot_reach_time = self.ticks
+
+            orca_robot_speed = np.linalg.norm(
+                np.array([self.robot_orca.vel_x, self.robot_orca.vel_y], dtype=np.float32))
+            self.orca_robot_path_length += orca_robot_speed * self.TIMESTEP
+
+        collision_human, collision_object, collision_wall = self.check_robot_collision(self.robot)
+
+        collision = collision_object or collision_human
+
+        dmin = float('inf')
+
+        self.all_humans = []
+        for human in self.static_humans + self.dynamic_humans: self.all_humans.append(human)
+
+        for i in self.static_interactions + self.moving_interactions:
+            for h in i.humans: self.all_humans.append(h)
+
+        for i in self.h_l_interactions: self.all_humans.append(i.human)
+
+        for human in self.all_humans:
+            px = human.x - self.robot.x
+            py = human.y - self.robot.y
+
+            vx = human.speed * np.cos(human.orientation) - action[0] * np.cos(
+                action[2] * self.TIMESTEP + self.robot.orientation) - action[1] * np.cos(
+                action[2] * self.TIMESTEP + self.robot.orientation + np.pi / 2)
+            vy = human.speed * np.sin(human.orientation) - action[0] * np.sin(
+                action[2] * self.TIMESTEP + self.robot.orientation) - action[1] * np.sin(
+                action[2] * self.TIMESTEP + self.robot.orientation + np.pi / 2)
+
+            ex = px + vx * self.TIMESTEP
+            ey = py + vy * self.TIMESTEP
+
+            closest_dist = point_to_segment_dist(px, py, ex, ey, 0, 0) - self.HUMAN_DIAMETER / 2 - self.ROBOT_RADIUS
+
+            if closest_dist < dmin:
+                dmin = closest_dist
+
+        for human in self.static_humans + self.dynamic_humans:
+            px = human.x - self.robot.x
+            py = human.y - self.robot.y
+
+            vx = human.speed * np.cos(human.orientation) - action[0] * np.cos(
+                action[2] * self.TIMESTEP + self.robot.orientation) - action[1] * np.cos(
+                action[2] * self.TIMESTEP + self.robot.orientation + np.pi / 2)
+            vy = human.speed * np.sin(human.orientation) - action[0] * np.sin(
+                action[2] * self.TIMESTEP + self.robot.orientation) - action[1] * np.sin(
+                action[2] * self.TIMESTEP + self.robot.orientation + np.pi / 2)
+
+            ex = px + vx * self.TIMESTEP
+            ey = py + vy * self.TIMESTEP
+
+            closest_dist = point_to_segment_dist(px, py, ex, ey, 0, 0) - self.HUMAN_DIAMETER / 2 - self.ROBOT_RADIUS
+
+            if closest_dist < dmin:
+                dmin = closest_dist
+
+        for interaction in (self.moving_interactions + self.static_interactions + self.h_l_interactions):
+            px = interaction.x - self.robot.x
+            py = interaction.y - self.robot.y
+
+            speed = 0
+            if interaction.name == "human-human-interaction":
+                for h in interaction.humans:
+                    speed += h.speed
+                speed /= len(interaction.humans)
+
+            vx = speed * np.cos(human.orientation) - action[0] * np.cos(
+                action[2] * self.TIMESTEP + self.robot.orientation) - action[1] * np.cos(
+                action[2] * self.TIMESTEP + self.robot.orientation + np.pi / 2)
+            vy = speed * np.sin(human.orientation) - action[0] * np.sin(
+                action[2] * self.TIMESTEP + self.robot.orientation) - action[1] * np.sin(
+                action[2] * self.TIMESTEP + self.robot.orientation + np.pi / 2)
+
+            ex = px + vx * self.TIMESTEP
+            ey = py + vy * self.TIMESTEP
+
+            closest_dist = point_to_segment_dist(px, py, ex, ey, 0, 0) - self.HUMAN_DIAMETER / 2 - self.ROBOT_RADIUS
+
+            if closest_dist < dmin:
+                dmin = closest_dist
+
+        info = {
+            "OUT_OF_MAP": False,
+            "COLLISION_HUMAN": False,
+            "COLLISION_OBJECT": False,
+            "COLLISION": False,
+            "DISCOMFORT_SNGNN": 0.0,
+            "DISCOMFORT_DSRNN": 0.0,
+            'sngnn_reward': 0.0,
+            'distance_reward': 0.0,
+
+            # metrics with different nomenclature
+            "SUCCESS": False,
+            "COLLISION_WALL": False,
+            "TIMEOUT": False,
+            "FAILURE_TO_PROGRESS": self.failure_to_progress,
+            "STALLED_TIME": self.stalled_time,
+            "TIME_TO_REACH_GOAL": None,  # will be None if the robot didn't reach the goal.
+            "STL": None,
+            "SPL": None
+        }
+
+        # calculate the reward and record necessary information
+        if self.MAP_X / 2 < self.robot.x or self.robot.x < -self.MAP_X / 2 or self.MAP_Y / 2 < self.robot.y or self.robot.y < -self.MAP_Y / 2:
+            self._is_terminated = self._is_terminated or self.END_WITH_COLLISION
+            self._collision = True
+            info["OUT_OF_MAP"] = True
+        # THESIS. in my thesis, i simplly set reach goal and success when distance_to_goal < self.GOAL_THRESHOLD
+        # if distance_to_goal < self.GOAL_THRESHOLD and diff_goal_angle < self.GOAL_ORIENTATION_THRESHOLD:
+        if distance_to_goal < self.GOAL_THRESHOLD:
+            self._is_terminated = True
+            info["SUCCESS"] = True
+            info["TIME_TO_REACH_GOAL"] = self.ticks * self.TIMESTEP
+
+        if collision is True:
+            self._is_terminated = self._is_terminated or self.END_WITH_COLLISION
+            self._collision = True
+            info["COLLISION"] = True
+
+            if collision_human:
+                info["COLLISION_HUMAN"] = True
+
+            if collision_object:
+                info["COLLISION_OBJECT"] = True
+
+        if self.ticks >= self.EPISODE_LENGTH:
+            self._is_truncated = True
+            info["TIMEOUT"] = True
+
+        if collision_wall:
+            info["COLLISION_WALL"] = True
+
+        if distance_to_goal > self.prev_goal_distance:
+            self.failure_to_progress += 1
+            info["FAILURE_TO_PROGRESS"] = self.failure_to_progress
+        self.prev_goal_distance = distance_to_goal
+
+        robot_speed = np.linalg.norm(np.array([action[0], action[1]], dtype=np.float32))
+        if robot_speed == 0:
+            self.stalled_time += self.TIMESTEP
+            info["STALLED_TIME"] = self.stalled_time
+
+        self.robot_path_length += self.TIMESTEP * robot_speed
+        info["PATH_LENGTH"] = self.robot_path_length
+
+        self.reward_calculator.update_env(self)
+        reward = self.reward_calculator.compute_reward(action, self._prev_observations, self._current_observations)
+        for k, v in self.reward_calculator.info.items():
+            info[k] = v
+
+        # velocity based info
+        self.v_min = min(self.v_min, robot_speed)
+        self.v_max = max(self.v_max, robot_speed)
+        self.v_avg *= (self.ticks - 1)
+        self.v_avg += robot_speed
+        self.v_avg /= self.ticks
+
+        info["V_MIN"] = self.v_min
+        info["V_AVG"] = self.v_avg
+        info["V_MAX"] = self.v_max
+
+        # acceleration based info
+        vel = np.array([action[0], action[1]], dtype=np.float32)
+        a = (vel - self.prev_vel) / self.TIMESTEP
+        self.prev_vel = vel
+        a_magnitude = np.linalg.norm(a)
+
+        self.a_min = min(self.a_min, a_magnitude)
+        self.a_max = max(self.a_max, a_magnitude)
+        self.a_avg *= (self.ticks - 1)
+        self.a_avg += a_magnitude
+        self.a_avg /= self.ticks
+
+        info["A_MIN"] = self.a_min
+        info["A_AVG"] = self.a_avg
+        info["A_MAX"] = self.a_max
+
+        jerk = (a - self.prev_a) / self.TIMESTEP
+        self.prev_a = a
+        jerk_magnitude = np.linalg.norm(jerk)
+        self.jerk_min = min(self.jerk_min, jerk_magnitude)
+        self.jerk_max = max(self.jerk_max, jerk_magnitude)
+        self.jerk_avg *= (self.ticks - 1)
+        self.jerk_avg += jerk_magnitude
+        self.jerk_avg /= self.ticks
+
+        info["JERK_MIN"] = self.jerk_min
+        info["JERK_AVG"] = self.jerk_avg
+        info["JERK_MAX"] = self.jerk_max
+
+        # calculating the closest distance to humans and time to collision
+        closest_human_dist = float('inf')
+        time_to_collision = None
+        robot_vx = action[0] * np.cos(self.robot.orientation) + action[1] * np.cos(self.robot.orientation + np.pi / 2)
+        robot_vy = action[0] * np.sin(self.robot.orientation) + action[1] * np.sin(self.robot.orientation + np.pi / 2)
+
+        for h in self.static_humans + self.dynamic_humans:
+            closest_human_dist = min(closest_human_dist, np.sqrt((self.robot.x - h.x) ** 2 + (self.robot.y - h.y) ** 2))
+            t = compute_time_to_collision(
+                self.robot.x,
+                self.robot.y,
+                robot_vx,
+                robot_vy,
+                h.x,
+                h.y,
+                h.speed * np.cos(h.orientation),
+                h.speed * np.sin(h.orientation),
+                self.ROBOT_RADIUS,
+                self.HUMAN_DIAMETER / 2
+            )
+
+            if t != -1:
+                if time_to_collision is None:
+                    time_to_collision = ceil(t / self.TIMESTEP)
+                else:
+                    time_to_collision = min(time_to_collision, ceil(t / self.TIMESTEP))
+
+        for i in self.moving_interactions + self.static_interactions:
+            for h in i.humans:
+                closest_human_dist = min(closest_human_dist,
+                                         np.sqrt((self.robot.x - h.x) ** 2 + (self.robot.y - h.y) ** 2))
+                t = compute_time_to_collision(
+                    self.robot.x,
+                    self.robot.y,
+                    robot_vx,
+                    robot_vy,
+                    h.x,
+                    h.y,
+                    h.speed * np.cos(h.orientation),
+                    h.speed * np.sin(h.orientation),
+                    self.ROBOT_RADIUS,
+                    self.HUMAN_DIAMETER / 2
+                )
+
+                if t != -1:
+                    if time_to_collision is None:
+                        time_to_collision = ceil(t / self.TIMESTEP)
+                    else:
+                        time_to_collision = min(time_to_collision, ceil(t / self.TIMESTEP))
+
+        for i in self.h_l_interactions:
+            closest_human_dist = min(closest_human_dist,
+                                     np.sqrt((self.robot.x - i.human.x) ** 2 + (self.robot.y - i.human.y) ** 2))
+            h = i.human
+            t = compute_time_to_collision(
+                self.robot.x,
+                self.robot.y,
+                robot_vx,
+                robot_vy,
+                h.x,
+                h.y,
+                h.speed * np.cos(h.orientation),
+                h.speed * np.sin(h.orientation),
+                self.ROBOT_RADIUS,
+                self.HUMAN_DIAMETER / 2
+            )
+
+            if t != -1:
+                if time_to_collision is None:
+                    time_to_collision = ceil(t / self.TIMESTEP)
+                else:
+                    time_to_collision = min(time_to_collision, ceil(t / self.TIMESTEP))
+
+        if time_to_collision is None:
+            info["TIME_TO_COLLISION"] = -1
+        else:
+            info["TIME_TO_COLLISION"] = time_to_collision
+
+        info["MINIMUM_DISTANCE_TO_HUMAN"] = closest_human_dist
+
+        if (closest_human_dist - self.ROBOT_RADIUS) >= 0.45:  # same value used in SEAN 2.0
+            self.compliant_count += 1
+
+        info["PERSONAL_SPACE_COMPLIANCE"] = self.compliant_count / self.ticks
+
+        # Success weighted by time length
+        info["STL"] = 0
+        info["SPL"] = 0
+        if info["SUCCESS"]:
+            if self.has_orca_robot_collided or not self.has_orca_robot_reached_goal:
+                info["STL"] = 1
+                info["SPL"] = 1
+            else:
+                stl_value = float(self.orca_robot_reach_time / self.ticks)
+                if stl_value > 1: stl_value = 1
+                info["STL"] = stl_value
+
+                spl_value = float(self.orca_robot_path_length / info["PATH_LENGTH"])
+                if spl_value > 1: spl_value = 1
+                info["SPL"] = spl_value
+
+        closest_obstacle_dist = float('inf')
+        obstacle_dist_sum = 0
+        obstacle_count = 0
+        for p in self.plants:
+            d = np.sqrt((self.robot.x - p.x) ** 2 + (self.robot.y - p.y) ** 2) - self.PLANT_RADIUS
+            closest_obstacle_dist = min(closest_obstacle_dist, d)
+            obstacle_dist_sum += d
+            obstacle_count += 1
+
+        for table in self.tables:
+            p_x, p_y = get_nearest_point_from_rectangle(table.x, table.y, table.length, table.width, table.orientation,
+                                                        self.robot.x, self.robot.y)
+            d = np.sqrt((self.robot.x - p_x) ** 2 + (self.robot.y - p_y) ** 2)
+            closest_obstacle_dist = min(
+                closest_obstacle_dist,
+                d
+            )
+            obstacle_dist_sum += d
+            obstacle_count += 1
+
+        for chair in self.chairs:
+            p_x, p_y = get_nearest_point_from_rectangle(chair.x, chair.y, chair.length, chair.width, chair.orientation,
+                                                        self.robot.x, self.robot.y)
+            d = np.sqrt((self.robot.x - p_x) ** 2 + (self.robot.y - p_y) ** 2)
+            closest_obstacle_dist = min(
+                closest_obstacle_dist,
+                d
+            )
+            obstacle_dist_sum += d
+            obstacle_count += 1
+
+        for wall in self.walls:
+            p_x, p_y = get_nearest_point_from_rectangle(wall.x, wall.y, wall.length, wall.thickness, wall.orientation,
+                                                        self.robot.x, self.robot.y)
+            d = np.sqrt((self.robot.x - p_x) ** 2 + (self.robot.y - p_y) ** 2)
+            closest_obstacle_dist = min(
+                closest_obstacle_dist,
+                d
+            )
+            obstacle_dist_sum += d
+            obstacle_count += 1
+
+        info["MINIMUM_OBSTACLE_DISTANCE"] = closest_obstacle_dist
+        info["AVERAGE_OBSTACLE_DISTANCE"] = None
+        if obstacle_count > 0:
+            info["AVERAGE_OBSTACLE_DISTANCE"] = obstacle_dist_sum / obstacle_count
+
+        # information of the interacting entities within the environment
+        info["interactions"] = {}
+        info["interactions"]["human-human"] = []
+        info["interactions"]["human-laptop"] = []
+
+        curr_humans = len(self.static_humans + self.dynamic_humans)
+        curr_laptops = len(self.laptops)
+
+        for i, interaction in enumerate(self.moving_interactions + self.static_interactions):
+            interaction_indices = []
+            count_of_humans = 0
+
+            for j, human in enumerate(interaction.humans):
+                interaction_indices.append(curr_humans + j)
+                count_of_humans += 1
+
+            for p in range(len(interaction_indices)):
+                for q in range(p + 1, len(interaction_indices)):
+                    info["interactions"]["human-human"].append((interaction_indices[p], interaction_indices[q]))
+                    info["interactions"]["human-human"].append((interaction_indices[q], interaction_indices[p]))
+
+            curr_humans += count_of_humans
+
+        for i, interaction in enumerate(self.h_l_interactions):
+            info["interactions"]["human-laptop"].append((curr_humans + i, curr_laptops + i))
+            # assertion statement
+            if (i == len(self.h_l_interactions)):
+                assert (curr_humans + i == (self.total_humans - 1))
+                assert (curr_laptops + i == len(self.laptops + self.h_l_interactions) - 1)
+
+        return reward, info
+
+
+
 
 

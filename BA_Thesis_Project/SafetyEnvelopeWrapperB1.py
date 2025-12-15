@@ -3,7 +3,6 @@ import numpy as np
 from gymnasium import spaces
 
 from BA_Thesis_Project.SafetyEnvelope import SafetyEnvelope
-from BA_Thesis_Project.SafetyEnvelopeWrapper import SafetyEnvelopeWrapper
 from gymnasium_envCustomHue.envs import FrontalEncounter
 
 SAFETY_ENVELOPE_INTERVENE_PENALTY_SCALE= -80
@@ -26,6 +25,8 @@ class SafetyEnvelopeWrapperB1(gym.Wrapper):
         self.current_info = None
         # helper class to do the actual Safety Envelope logic
         self.safetyEnvelopeImp = SafetyEnvelope(env)
+        # prev action is used to calculate in reward, see how much robot change rotation-> penalty is chnaging sign of rotation between step-> prevent OSCILLATION
+        self.prev_action=None
         # Start from the underlying Dict space
         # ValueError: cannot reshape array of size 0 into shape (0,) get when run EvalCallBack. Cause:SB3 expects every observation key to have a fixed, non-zero shape.But SocNavGym returned empty arrays for:
         # plants: shape (0,),.../SB3 then tried to reshape these during evaluation:obs_[key].reshape((-1, *self.observation_space[key].shape))reshaping size-0 into shape (0,) crashes.
@@ -35,6 +36,8 @@ class SafetyEnvelopeWrapperB1(gym.Wrapper):
         original_space= self.env.observation_space
         assert isinstance(original_space, spaces.Dict), "SocNavGym obs must be Dict"
         pruned_spaces["robot"]= original_space["robot"]
+        #filter obs walls
+        pruned_spaces["distances_to_walls"]= spaces.Box(low=-np.inf, high=np.inf,shape=(4,),dtype=np.float32)
         # for humans: keep only the first 11 fields per entity -> change the shape of humans
         humans_box= original_space["humans"]
         assert isinstance(humans_box, spaces.Box)
@@ -44,15 +47,7 @@ class SafetyEnvelopeWrapperB1(gym.Wrapper):
         low_cropped= low_original.reshape(-1,14)[:, :11].flatten()
         high_cropped = high_original.reshape(-1, 14)[:, :11].flatten()
         pruned_spaces["humans"]=spaces.Box(low=low_cropped, high=high_cropped, shape=low_cropped.shape, dtype=humans_box.dtype)
-        # # for walls
-        # if "walls" in original_space.spaces:
-        #     walls_box=original_space["walls"]
-        #     assert isinstance(walls_box, spaces.Box)
-        #     low_walls_original=walls_box.low
-        #     high_walls_original=walls_box.high
-        #     low_walls_cropped = low_walls_original.reshape(-1, 14)[:, :11].flatten()
-        #     high_walls_cropped = high_walls_original.reshape(-1, 14)[:, :11].flatten()
-        #     pruned_spaces["walls"]=spaces.Box(low=low_walls_cropped, high=high_walls_cropped, shape=low_walls_cropped.shape, dtype=walls_box.dtype)
+
 
         self.observation_space = spaces.Dict(pruned_spaces)
 
@@ -71,7 +66,7 @@ class SafetyEnvelopeWrapperB1(gym.Wrapper):
         info["safety_envelope_intervenes"] = self.safety_envelope_intervenes
 
         obs = dict(obs)
-        # drop unused entities:only keep keys in pruned obs_space ("robot", "humans")
+        # drop unused entities:only keep keys in pruned obs_space ("robot", "humans", "distance)
         obs=self.filter_obs(obs)
         # filter entity observations: drop indices 11–13
 
@@ -79,18 +74,17 @@ class SafetyEnvelopeWrapperB1(gym.Wrapper):
             if key in obs:
                 obs[key] = SafetyEnvelopeWrapperB1.filter_unrelated_field_value(obs[key])
 
-        observation_robot=obs
+        obs["distances_to_walls"] = np.array(self.safetyEnvelopeImp.compute_distances_to_walls(obs), dtype=np.float32)
 
         # # IMPORTANT: need to run reset before doing anything else to set the initial minimum distance to other obstacles in info to use later in step()
         # initial_minimum_distance_Obstacles = self.compute_initial_d_min_to_obstacles(obs)
         # info['MINIMUM_OBSTACLE_DISTANCE'] = initial_minimum_distance_Obstacles
-
+        self.prev_action=None
         self.current_obs = obs
         self.current_info = info
         return self.current_obs, self.current_info
 
     def step(self, action):
-        print("...................................................................................................................")
         safe_action,  alertness_value, safety_envelope_intervenes,alertHuman, alertWall = self.safetyEnvelopeImp.next_action(  action, self.current_obs)
         self.alertness_value = alertness_value
         self.alertnessHuman=alertHuman
@@ -111,6 +105,8 @@ class SafetyEnvelopeWrapperB1(gym.Wrapper):
                 obs[key] = SafetyEnvelopeWrapperB1.filter_unrelated_field_value(obs[key])
 
         info["safety_envelope_intervenes"] = self.safety_envelope_intervenes
+        obs["distances_to_walls"]=np.array(self.safetyEnvelopeImp.compute_distances_to_walls(obs), dtype=np.float32)
+
         self.current_obs = obs
         self.current_info = info
         # recompute the reward from the base reward
@@ -135,5 +131,4 @@ class SafetyEnvelopeWrapperB1(gym.Wrapper):
     def filter_obs(self, obs: dict):
         """Return only the keys allowed by pruned observation_space.here: keys in wrapper obs space is robot and humans, defined in init()"""
         allowed = self.observation_space.spaces.keys()
-        print(f"alloed key {allowed}")
-        return {k: obs[k] for k in allowed if k in obs}
+        return {k: obs[k] for k in allowed if k in obs }

@@ -17,19 +17,18 @@ import sys, os, importlib, inspect
 #     del sys.modules['socnavgym']
 
 import socnavgym
-print("Using socnavgym from:", inspect.getfile(socnavgym))
 
 class Reward(RewardAPI):
     def __init__(self, env:Any):
         super().__init__(env)
-
-        # self.env.alertness_value=None
-        # self.env.safety_envelope_intervenes= False
         self.prev_distance= None
-        self.distancePenalty=-3.0
-        self.reach_reward = 30
+        # distancePenalty*progress to give penalty when robot move away from goa;, make progress costly than speed bonus inWrapper 1 to prevent cycling after passing human
+        # Tell robot to move toward goal
+        self.distancePenalty=-10
+        self.reach_reward = 40
         self.collision_penalty = -50
         self.max_steps_penalty= -10
+        # encourage robot to finish fast
         self.step_penalty=-0.02
 
     def compute_reward(self, action, prev_obs: EntityObs, curr_obs: EntityObs):
@@ -49,10 +48,18 @@ class Reward(RewardAPI):
             distance_to_goal = np.sqrt((self.env.robot.goal_x - self.env.robot.x) ** 2 + (self.env.robot.goal_y - self.env.robot.y) ** 2)
 
             reward=0
+            reward+=self.step_penalty
+            if self.prev_distance is None:
+                self.prev_distance=distance_to_goal
+                return reward
 
-            if self.prev_distance is not None:
-                reward = self.step_penalty+(distance_to_goal-self.prev_distance) *self.distancePenalty
+            progress=distance_to_goal-self.prev_distance
+            reward += progress*self.distancePenalty
 
+            # penalize being stuck (no progress)
+            if abs(progress) < 0.02:
+                reward-=0.02
+            # update for next step
             self.prev_distance = distance_to_goal
             return reward
 
